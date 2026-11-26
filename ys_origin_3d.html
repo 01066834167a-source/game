@@ -1027,17 +1027,264 @@ function getRealmForFloor(floorNum) {
     return TOWER_REALMS[idx];
 }
 
+// ---- 직접 설계한 방(7x7 타일) : '#' 벽/장애물, '.' 바닥 ----
+const ROOMS = {
+    open:     ['.......','.......','.......','.......','.......','.......','.......'],
+    pillars:  ['.......','.#...#.','.......','.......','.......','.#...#.','.......'],
+    corridor: ['##...##','##...##','##...##','.......','##...##','##...##','##...##'],
+    core:     ['.......','.......','..###..','..###..','..###..','.......','.......'],
+    zigzag:   ['.......','####...','.......','.......','.......','...####','.......'],
+    alcoves:  ['##...##','#.....#','.......','...#...','.......','#.....#','##...##'],
+    barricade:['.......','.##.##.','.......','.......','.......','.##.##.','.......'],
+    cells:    ['..#....','..#....','.......','##...##','.......','....#..','....#..'],
+    diamond:  ['.......','...#...','..#.#..','.#...#.','..#.#..','...#...','.......'],
+    // 중앙(여신상) 전용: 가운데 3x3은 항상 비움
+    sanctum:  ['#.....#','.......','.......','.......','.......','.......','#.....#'],
+    cloister: ['.......','.#...#.','.......','.......','.......','.#...#.','.......'],
+    gallery:  ['.#...#.','.#...#.','.......','.......','.......','.#...#.','.#...#.'],
+    // 계단방(남/북) 전용: 가운데 열은 항상 비움
+    gate:     ['.......','.#...#.','.#...#.','.......','.......','.......','.......'],
+    vestibule:['##...##','#.....#','.......','.......','.......','#.....#','##...##']
+};
+const EXPLORE_ROOMS = ['open', 'pillars', 'corridor', 'core', 'zigzag', 'alcoves', 'barricade', 'cells', 'diamond'];
+const CENTER_ROOMS = ['sanctum', 'cloister', 'gallery'];
+const STAIR_ROOMS = ['gate', 'vestibule', 'open'];
+
+// 방 슬롯 번호(3x3):  0 1 2 / 3 4 5 / 6 7 8   (1=북쪽 계단, 4=여신상, 7=남쪽 계단)
+const LAYOUTS = [
+    { name: '십자 성소', links: ['74', '41', '43', '45'] },
+    { name: '쌍익 회랑', links: ['76', '63', '34', '78', '85', '54', '41'] },
+    { name: '사행 수로', links: ['78', '85', '54', '43', '30', '01'] },
+    { name: '외곽 순환로', links: ['76', '63', '30', '01', '12', '25', '58', '87', '34', '45'] },
+    { name: '갈림길 전당', links: ['74', '41', '76', '63', '45', '52'] },
+    { name: '역류 미궁', links: ['76', '63', '34', '45', '52', '21'] },
+    { name: '탐식의 곁방', links: ['74', '48', '45', '58', '43', '30', '01', '41'] },
+    { name: '삼중 전실', links: ['78', '76', '74', '41', '10', '12', '03', '25'] }
+];
+
+const TILE = 2.4;
+const GRID_N = 23; // 7칸 방 3개 + 사이 벽 2줄
+const GRID_HALF = GRID_N * TILE / 2;
+let tileGrid = [];
+let currentLayoutName = '';
+
+function generateTileGrid(floorNum) {
+    const isBossFloor = floorNum % 5 === 0;
+    const grid = Array.from({ length: GRID_N }, () => Array(GRID_N).fill(1));
+
+    if (isBossFloor) {
+        // 보스층: 탁 트인 결전장 + 영역별 엄폐 기둥 배치
+        for (let r = 0; r < GRID_N; r++) grid[r].fill(0);
+        const realmIdx = Math.floor((floorNum - 1) / 5);
+        const covers = [
+            [[6, 6], [6, 16], [16, 6], [16, 16]],
+            [[7, 11], [11, 4], [11, 18], [16, 11]],
+            [[5, 5], [5, 17], [17, 5], [17, 17], [11, 3], [11, 19]],
+            [[6, 8], [6, 14], [16, 8], [16, 14]],
+            [[8, 5], [14, 17], [5, 15], [17, 7]],
+            [[4, 4], [4, 18], [18, 4], [18, 18]]
+        ][Math.min(5, realmIdx)];
+        covers.forEach(([r, c]) => { grid[r][c] = 1; });
+        currentLayoutName = '수호자의 결전장';
+        return grid;
+    }
+
+    // 영역(5층) 안에서는 같은 구조가 반복되지 않도록 층 번호로 순환
+    const layout = LAYOUTS[(floorNum + Math.floor((floorNum - 1) / 5) * 2) % LAYOUTS.length];
+    currentLayoutName = layout.name;
+    const used = new Set();
+    layout.links.forEach(l => { used.add(+l[0]); used.add(+l[1]); });
+
+    used.forEach(slot => {
+        const pool = slot === 4 ? CENTER_ROOMS : (slot === 1 || slot === 7) ? STAIR_ROOMS : EXPLORE_ROOMS;
+        const rows = ROOMS[pool[Math.floor(seededRandom(floorNum * 7.31 + slot * 3.17) * pool.length)]];
+        const mirror = seededRandom(floorNum * 2.23 + slot * 9.41) > 0.5;
+        const r0 = Math.floor(slot / 3) * 8, c0 = (slot % 3) * 8;
+        for (let r = 0; r < 7; r++) {
+            for (let c = 0; c < 7; c++) grid[r0 + r][c0 + c] = rows[r][mirror ? 6 - c : c] === '#' ? 1 : 0;
+        }
+    });
+
+    // 방 사이 통로(폭 3칸) 개통
+    layout.links.forEach(l => {
+        const a = Math.min(+l[0], +l[1]), b = Math.max(+l[0], +l[1]);
+        const r0 = Math.floor(a / 3) * 8, c0 = (a % 3) * 8;
+        for (let k = 2; k <= 4; k++) {
+            for (let d = -1; d <= 1; d++) {
+                if (b - a === 1) grid[r0 + k][c0 + 7 + d] = 0;
+                else grid[r0 + 7 + d][c0 + k] = 0;
+            }
+        }
+    });
+
+    sealUnreachable(grid);
+    return grid;
+}
+
+// 시작 지점에서 닿지 않는 바닥은 벽으로 메워, 적·아이템이 고립되지 않게 함
+function sealUnreachable(grid) {
+    const dist = bfsTiles(grid, GRID_N - 2, 11);
+    for (let r = 0; r < GRID_N; r++) {
+        for (let c = 0; c < GRID_N; c++) if (!grid[r][c] && dist[r * GRID_N + c] < 0) grid[r][c] = 1;
+    }
+}
+
+function bfsTiles(grid, sr, sc) {
+    const dist = new Int16Array(GRID_N * GRID_N).fill(-1);
+    const queue = [sr * GRID_N + sc];
+    dist[queue[0]] = 0;
+    for (let h = 0; h < queue.length; h++) {
+        const cur = queue[h], r = Math.floor(cur / GRID_N), c = cur % GRID_N;
+        for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nr = r + dr, nc = c + dc;
+            if (nr < 0 || nc < 0 || nr >= GRID_N || nc >= GRID_N || grid[nr][nc]) continue;
+            const id = nr * GRID_N + nc;
+            if (dist[id] >= 0) continue;
+            dist[id] = dist[cur] + 1;
+            queue.push(id);
+        }
+    }
+    return dist;
+}
+
+const tileCol = x => Math.floor((x + GRID_HALF) / TILE);
+const tileRow = z => Math.floor((z + GRID_HALF) / TILE);
+const tileX = c => (c + 0.5) * TILE - GRID_HALF;
+const tileZ = r => (r + 0.5) * TILE - GRID_HALF;
+
+function isSolidTile(r, c) {
+    if (r < 0 || c < 0 || r >= GRID_N || c >= GRID_N) return true;
+    return !!(tileGrid[r] && tileGrid[r][c]);
+}
+const isSolidAt = (x, z) => isSolidTile(tileRow(z), tileCol(x));
+
+// 원형 몸체를 벽 밖으로 밀어냄
+function pushOutOfWalls(x, z, radius) {
+    const cr = tileRow(z), cc = tileCol(x);
+    for (let r = cr - 1; r <= cr + 1; r++) {
+        for (let c = cc - 1; c <= cc + 1; c++) {
+            if (!isSolidTile(r, c)) continue;
+            const minX = c * TILE - GRID_HALF, minZ = r * TILE - GRID_HALF;
+            const nx = Math.max(minX, Math.min(minX + TILE, x));
+            const nz = Math.max(minZ, Math.min(minZ + TILE, z));
+            const dx = x - nx, dz = z - nz, d = Math.hypot(dx, dz);
+            if (d >= radius) continue;
+            if (d > 1e-5) {
+                x = nx + dx / d * radius;
+                z = nz + dz / d * radius;
+            } else {
+                // 중심이 벽 안: 가장 가까운 빈 면으로 탈출
+                const exits = [
+                    [minX - radius, z, r, c - 1], [minX + TILE + radius, z, r, c + 1],
+                    [x, minZ - radius, r - 1, c], [x, minZ + TILE + radius, r + 1, c]
+                ].filter(e => !isSolidTile(e[2], e[3]));
+                exits.sort((a, b) => Math.hypot(a[0] - x, a[1] - z) - Math.hypot(b[0] - x, b[1] - z));
+                if (exits.length) { x = exits[0][0]; z = exits[0][1]; }
+            }
+        }
+    }
+    return [x, z];
+}
+
+// 빠른 이동(대시·넉백·돌격)도 벽을 뚫지 않도록 잘게 나눠 이동
+function slideMove(x, z, mx, mz, radius, margin) {
+    const steps = Math.max(1, Math.ceil(Math.hypot(mx, mz) / 0.4));
+    for (let i = 0; i < steps; i++) {
+        x = Math.max(-ARENA_HALF_W + margin, Math.min(ARENA_HALF_W - margin, x + mx / steps));
+        z = Math.max(-ARENA_HALF_D + margin, Math.min(ARENA_HALF_D - margin, z + mz / steps));
+        [x, z] = pushOutOfWalls(x, z, radius);
+    }
+    return [x, z];
+}
+
+const wallRadius = e => Math.min(1.1, e.radius * 0.85);
+
+function hasLineOfSight(x1, z1, x2, z2) {
+    const d = Math.hypot(x2 - x1, z2 - z1);
+    const n = Math.ceil(d / 0.6);
+    for (let i = 1; i < n; i++) {
+        if (isSolidAt(x1 + (x2 - x1) * i / n, z1 + (z2 - z1) * i / n)) return false;
+    }
+    return true;
+}
+
+// 플레이어까지의 거리장(길찾기). 플레이어 타일이 바뀔 때만 다시 계산
+let flowField = null, flowKey = '';
+function chaseAngle(e) {
+    const direct = Math.atan2(player.x - e.x, player.z - e.z);
+    const ox = Math.cos(direct) * 0.8, oz = -Math.sin(direct) * 0.8;
+    if (hasLineOfSight(e.x + ox, e.z + oz, player.x + ox, player.z + oz) &&
+        hasLineOfSight(e.x - ox, e.z - oz, player.x - ox, player.z - oz)) return direct;
+    const pr = tileRow(player.z), pc = tileCol(player.x);
+    const key = `${pr},${pc}`;
+    if (key !== flowKey) {
+        flowKey = key;
+        flowField = bfsTiles(tileGrid, pr, pc);
+    }
+    const r = tileRow(e.z), c = tileCol(e.x);
+    let best = null, bestD = Infinity;
+    for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+            if ((!dr && !dc) || isSolidTile(r + dr, c + dc)) continue;
+            if (dr && dc && (isSolidTile(r + dr, c) || isSolidTile(r, c + dc))) continue;
+            const v = flowField[(r + dr) * GRID_N + c + dc];
+            if (v >= 0 && v + (dr && dc ? 0.4 : 0) < bestD) { bestD = v + (dr && dc ? 0.4 : 0); best = [r + dr, c + dc]; }
+        }
+    }
+    return best ? Math.atan2(tileX(best[1]) - e.x, tileZ(best[0]) - e.z) : direct;
+}
+
+function randomFloorPoint(minPlayerDist) {
+    const free = [];
+    for (let r = 0; r < GRID_N; r++) {
+        for (let c = 0; c < GRID_N; c++) {
+            const x = tileX(c), z = tileZ(r);
+            if (!tileGrid[r][c] && Math.hypot(x - player.x, z - player.z) >= minPlayerDist &&
+                Math.abs(x) < ARENA_HALF_W - 1.5 && Math.abs(z) < ARENA_HALF_D - 3) free.push([x, z]);
+        }
+    }
+    if (!free.length) return [0, 0];
+    const [x, z] = free[Math.floor(Math.random() * free.length)];
+    return pushOutOfWalls(x + (Math.random() - 0.5) * 0.8, z + (Math.random() - 0.5) * 0.8, 1.1);
+}
+
+// 영역별 바닥 장식(통과 가능): 수면·용암 균열·모래언덕·혈흔 문양·환영 결정·성소 문양
+function addRealmDecor(floorNum, realm) {
+    const idx = Math.min(5, Math.floor((floorNum - 1) / 5));
+    const geo = [
+        () => new THREE.CircleGeometry(0.9, 20),
+        () => new THREE.PlaneGeometry(0.22, 1.9),
+        () => new THREE.CircleGeometry(1.1, 7),
+        () => new THREE.RingGeometry(0.35, 0.55, 5),
+        () => new THREE.CircleGeometry(0.45, 4),
+        () => new THREE.RingGeometry(0.7, 0.8, 8)
+    ][idx]();
+    const mat = new THREE.MeshBasicMaterial({ color: realm.accent, side: THREE.DoubleSide, transparent: true, opacity: idx === 2 ? 0.13 : 0.24 });
+    let placed = 0;
+    for (let i = 0; i < 90 && placed < 26; i++) {
+        const r = Math.floor(seededRandom(floorNum * 5.9 + i * 1.7) * GRID_N);
+        const c = Math.floor(seededRandom(floorNum * 8.3 + i * 2.9) * GRID_N);
+        if (tileGrid[r][c]) continue;
+        const m = new THREE.Mesh(geo, mat);
+        m.rotation.x = -Math.PI / 2;
+        m.rotation.z = seededRandom(i * 4.4 + floorNum) * Math.PI;
+        m.position.set(tileX(c), 0.035 + placed * 0.0002, tileZ(r));
+        stageMapGroup.add(m);
+        placed++;
+    }
+}
+
 function buildStageMap(floorNum) {
     while (stageMapGroup.children.length > 0) {
         stageMapGroup.remove(stageMapGroup.children[0]);
     }
 
-    const r1 = seededRandom(floorNum * 1.13);
-    const r2 = seededRandom(floorNum * 2.71);
     const r3 = seededRandom(floorNum * 3.97);
 
-    ARENA_HALF_W = Math.round(19 + r1 * 10);
-    ARENA_HALF_D = Math.round(20 + r2 * 10);
+    ARENA_HALF_W = GRID_HALF;
+    ARENA_HALF_D = GRID_HALF;
+    tileGrid = generateTileGrid(floorNum);
+    flowKey = '';
 
     const realm = getRealmForFloor(floorNum);
 
@@ -1083,35 +1330,35 @@ function buildStageMap(floorNum) {
     centerRing.position.y = 0.03;
     stageMapGroup.add(centerRing);
 
-    // 4) 층별 고유 기둥 배치
-    const pillarCount = 2 + (floorNum % 4) * 2;
-    const pGeo = (floorNum % 2 === 0)
-        ? new THREE.BoxGeometry(1.5, 7.5, 1.5)
-        : new THREE.CylinderGeometry(0.85, 1.05, 7.5, 10);
-
-    for (let i = 0; i < pillarCount; i++) {
-        const pr1 = seededRandom(floorNum * 17.3 + i * 5.1);
-        const pr2 = seededRandom(floorNum * 29.7 + i * 8.3);
-        const px = (pr1 * 2 - 1) * (ARENA_HALF_W - 5.5);
-        const pz = (pr2 * 2 - 1) * (ARENA_HALF_D - 6.5);
-
-        // 중앙 여신상 공간과 남북 계단 입구는 비워둠
-        if (Math.hypot(px, pz) < 5.0) continue;
-        if (Math.abs(px) < 4.5 && Math.abs(pz) > ARENA_HALF_D - 7) continue;
-
-        const pillar = new THREE.Mesh(pGeo, wallMat);
-        pillar.position.set(px, 3.75, pz);
-        pillar.castShadow = true;
-        stageMapGroup.add(pillar);
-
-        const torchRing = new THREE.Mesh(
-            new THREE.TorusGeometry(1.05, 0.08, 6, 16),
-            new THREE.MeshBasicMaterial({ color: realm.accent })
-        );
-        torchRing.rotation.x = Math.PI / 2;
-        torchRing.position.set(px, 5.8, pz);
-        stageMapGroup.add(torchRing);
+    // 4) 방 벽 & 장애물 (타일 그리드 → 가로로 이어 붙여 생성). 시야를 가리지 않게 낮게
+    const innerH = 2.6;
+    const capMat = new THREE.MeshBasicMaterial({ color: realm.accent, transparent: true, opacity: 0.5 });
+    for (let r = 0; r < GRID_N; r++) {
+        let c = 0;
+        while (c < GRID_N) {
+            if (!tileGrid[r][c]) { c++; continue; }
+            let end = c;
+            while (end + 1 < GRID_N && tileGrid[r][end + 1]) end++;
+            const len = end - c + 1;
+            const single = len === 1 && !(r > 0 && tileGrid[r - 1][c]) && !(r < GRID_N - 1 && tileGrid[r + 1][c]);
+            const cx = (tileX(c) + tileX(end)) / 2;
+            const h = single ? innerH + 1.6 : innerH;
+            const geo = single && floorNum % 2 ? new THREE.CylinderGeometry(1.1, 1.25, h, 10) : new THREE.BoxGeometry(len * TILE, h, TILE);
+            const wall = new THREE.Mesh(geo, wallMat);
+            wall.position.set(cx, h / 2, tileZ(r));
+            wall.castShadow = true;
+            wall.receiveShadow = true;
+            stageMapGroup.add(wall);
+            const cap = single
+                ? new THREE.Mesh(new THREE.TorusGeometry(1.0, 0.08, 6, 16), capMat)
+                : new THREE.Mesh(new THREE.BoxGeometry(len * TILE, 0.08, 0.18), capMat);
+            if (single) cap.rotation.x = Math.PI / 2;
+            cap.position.set(cx, h + 0.05, tileZ(r));
+            stageMapGroup.add(cap);
+            c = end + 1;
+        }
     }
+    addRealmDecor(floorNum, realm);
 
     // 5) 중앙 여신의 석상 (피나 & 레아 석상: 마물 전멸 시 활성화)
     statueGroup = new THREE.Group();
@@ -1604,7 +1851,7 @@ function enterStageFloor(targetFloor, enteredFromSouth) {
     updateHUD();
 
     const realm = getRealmForFloor(wave);
-    addFloatingText(player.x, 2.4, player.z, `DARM TOWER ${wave}F · ${realm.name.split(' ')[0]}`, '#fbbf24');
+    addFloatingText(player.x, 2.4, player.z, `DARM TOWER ${wave}F · ${realm.name.split(' ')[0]} — ${currentLayoutName}`, '#fbbf24');
 }
 
 function openHelpModal() { if (helpModal) helpModal.classList.remove('hidden'); }
@@ -2051,8 +2298,7 @@ function cancelAttack() {
 }
 
 function movePlayer(mx, mz) {
-    player.x = Math.max(-ARENA_HALF_W + 1.1, Math.min(ARENA_HALF_W - 1.1, player.x + mx));
-    player.z = Math.max(-ARENA_HALF_D + 1.1, Math.min(ARENA_HALF_D - 1.1, player.z + mz));
+    [player.x, player.z] = slideMove(player.x, player.z, mx, mz, 0.7, 1.1);
 }
 
 function steerProjectile(p, dt) {
@@ -2411,11 +2657,7 @@ function getFloorScaling(floor) {
 }
 
 function spawnEnemy(type) {
-    let ex, ez;
-    do {
-        ex = (Math.random() * 2 - 1) * (ARENA_HALF_W - 3.0);
-        ez = (Math.random() * 2 - 1) * (ARENA_HALF_D - 4.0);
-    } while (Math.hypot(ex - player.x, ez - player.z) < 8.5);
+    const [ex, ez] = randomFloorPoint(8.5);
 
     const mesh = createEnemy3DMesh(type);
     mesh.position.set(ex, 0, ez);
@@ -2577,12 +2819,8 @@ function clearEnemyTelegraph(e) {
 }
 
 function moveEnemy(e, mx, mz) {
-    e.x = Math.max(-ARENA_HALF_W + 1.2, Math.min(ARENA_HALF_W - 1.2, e.x + mx));
-    e.z = Math.max(-ARENA_HALF_D + 1.2, Math.min(ARENA_HALF_D - 1.2, e.z + mz));
+    [e.x, e.z] = slideMove(e.x, e.z, mx, mz, wallRadius(e), 1.2);
 }
-
-function hasLineOfSight(x1, z1, x2, z2) { return true; }
-function chaseAngle(e) { return Math.atan2(player.x - e.x, player.z - e.z); }
 
 // 동시에 공격을 준비하는 적 수를 제한해 회피 여지를 남김
 function canStartAttack() {
@@ -2603,8 +2841,7 @@ const ENEMY_BRAINS = {
             if (dist < 6.5 && e.cd <= 0 && canStartAttack() && hasLineOfSight(e.x, e.z, player.x, player.z)) {
                 const d = Math.min(6.5, dist);
                 e.fromX = e.x; e.fromZ = e.z;
-                e.toX = Math.max(-ARENA_HALF_W + 1.3, Math.min(ARENA_HALF_W - 1.3, e.x + Math.sin(ang) * d));
-                e.toZ = Math.max(-ARENA_HALF_D + 1.3, Math.min(ARENA_HALF_D - 1.3, e.z + Math.cos(ang) * d));
+                [e.toX, e.toZ] = slideMove(e.x, e.z, Math.sin(ang) * d, Math.cos(ang) * d, wallRadius(e), 1.3);
                 e.tele = createTelegraph({ type: 'circle', x: e.toX, z: e.toZ, r: 2.0 }, 0.95, 0x34d399);
                 setAI(e, 'windup', 0.55);
             }
@@ -3116,7 +3353,7 @@ function update(dt) {
             }
         }
 
-        if (p.life <= 0 || Math.abs(p.x) > ARENA_HALF_W + 1 || Math.abs(p.z) > ARENA_HALF_D + 1) {
+        if (p.life <= 0 || isSolidAt(p.x, p.z) || Math.abs(p.x) > ARENA_HALF_W + 1 || Math.abs(p.z) > ARENA_HALF_D + 1) {
             scene.remove(p.mesh);
             projectiles.splice(i, 1);
         }
@@ -3139,8 +3376,7 @@ function update(dt) {
         }
 
         if (Math.abs(e.knockX) > 0.05 || Math.abs(e.knockZ) > 0.05) {
-            e.x += e.knockX * dt;
-            e.z += e.knockZ * dt;
+            moveEnemy(e, e.knockX * dt, e.knockZ * dt);
             const damp = Math.pow(0.82, dt * 60);
             e.knockX *= damp;
             e.knockZ *= damp;
@@ -3216,6 +3452,7 @@ function update(dt) {
 
         e.x = Math.max(-ARENA_HALF_W + 1.2, Math.min(ARENA_HALF_W - 1.2, e.x));
         e.z = Math.max(-ARENA_HALF_D + 1.2, Math.min(ARENA_HALF_D - 1.2, e.z));
+        if (!(e.type === 'slime' && e.ai === 'strike')) [e.x, e.z] = pushOutOfWalls(e.x, e.z, wallRadius(e));
         e.mesh.position.x = e.x;
         e.mesh.position.z = e.z;
 
