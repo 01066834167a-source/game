@@ -1,0 +1,2800 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>YS ORIGIN 3D - 다암의 탑</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Noto+Sans+KR:wght@400;700;900&display=swap');
+
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #070a12;
+            color: #f8fafc;
+            font-family: 'Noto Sans KR', sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        .ys-title {
+            font-family: 'Cinzel', serif;
+            text-shadow: 0 0 18px rgba(245, 158, 11, 0.8), 0 2px 5px rgba(0,0,0,0.95);
+        }
+
+        #game-wrapper {
+            position: relative;
+            flex: 1;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #070a12;
+            overflow: hidden;
+        }
+
+        #three-container {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            overflow: hidden;
+            cursor: crosshair;
+        }
+
+        #three-container canvas {
+            display: block;
+            width: 100% !important;
+            height: 100% !important;
+        }
+
+        .action-btn {
+            background: linear-gradient(145deg, #1e293b, #0f172a);
+            border: 2px solid #475569;
+            box-shadow: 0 4px 0 #020617, 0 6px 12px rgba(0,0,0,0.65);
+            transition: transform 0.08s, box-shadow 0.08s, border-color 0.15s;
+        }
+
+        .action-btn:active, .action-btn.pressed {
+            transform: translateY(3px);
+            box-shadow: 0 1px 0 #020617, 0 2px 4px rgba(0,0,0,0.65);
+            border-color: #f59e0b;
+        }
+
+        .btn-red { border-color: #dc2626; background: linear-gradient(145deg, #7f1d1d, #450a0a); }
+        .btn-blue { border-color: #2563eb; background: linear-gradient(145deg, #1e3a8a, #172554); }
+        .btn-amber { border-color: #d97706; background: linear-gradient(145deg, #78350f, #451a03); }
+        .btn-emerald { border-color: #059669; background: linear-gradient(145deg, #064e3b, #022c22); }
+
+        @keyframes boostPulse {
+            0%, 100% { box-shadow: 0 0 12px rgba(245, 158, 11, 0.5); }
+            50% { box-shadow: 0 0 28px rgba(251, 191, 36, 1); }
+        }
+        .boost-ready {
+            animation: boostPulse 1.2s infinite;
+        }
+
+        .char-card {
+            transition: all 0.2s ease;
+        }
+        .char-card.selected {
+            border-color: #fbbf24;
+            background: linear-gradient(180deg, rgba(120, 53, 15, 0.45) 0%, rgba(15, 23, 42, 0.95) 100%);
+            transform: translateY(-4px);
+            box-shadow: 0 10px 25px rgba(245, 158, 11, 0.35);
+        }
+
+        .floating-dmg {
+            position: absolute;
+            pointer-events: none;
+            font-weight: 900;
+            font-size: 16px;
+            text-shadow: 0 2px 4px #000, 0 0 8px rgba(0,0,0,0.95);
+            transform: translate(-50%, -50%);
+            white-space: nowrap;
+            z-index: 15;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 상단 <이스 오리진> 스타일 HUD -->
+    <header class="w-full px-3 py-2 bg-slate-950/95 border-b border-amber-500/30 flex flex-wrap items-center justify-between gap-2 z-10">
+        <!-- 좌측: 선택한 주인공 이름, 레벨 & 경험치 -->
+        <div class="flex items-center gap-2.5">
+            <div id="char-badge" class="w-9 h-9 rounded-full bg-gradient-to-br from-rose-600 to-amber-500 border-2 border-amber-300 flex flex-col items-center justify-center font-black text-white shadow-md leading-none">
+                <span class="text-[8px] text-amber-100">LV</span>
+                <span id="lv-text" class="text-sm">1</span>
+            </div>
+            <div class="flex flex-col gap-1 w-36 sm:w-48">
+                <div class="flex justify-between text-[11px] font-black">
+                    <span id="hero-name-hud" class="text-amber-300">YUNICA TOVAH</span>
+                    <span id="exp-text" class="text-sky-300">EXP 0 / 100</span>
+                </div>
+                <div class="w-full h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-700">
+                    <div id="exp-bar" class="h-full bg-gradient-to-r from-sky-500 to-cyan-300 transition-all duration-150" style="width: 0%;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 중앙: 다암의 탑 영역(FLOOR) & 보스 체력바 -->
+        <div class="flex flex-col items-center gap-0.5">
+            <div class="flex items-center gap-2">
+                <span id="stage-label" class="text-xs sm:text-sm font-black text-amber-300 tracking-wider">DARM TOWER 1F · 수계의 영역</span>
+                <span id="door-status-badge" class="px-2 py-0.5 rounded bg-rose-950/90 border border-rose-500/60 text-[10px] font-bold text-rose-300">
+                    🔒 계단 봉인됨
+                </span>
+            </div>
+            <div id="boss-hud" class="hidden flex-col items-center w-52 sm:w-72">
+                <span id="boss-name-label" class="text-[10px] font-black text-fuchsia-300 tracking-widest">DEMON GUARDIAN</span>
+                <div class="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-fuchsia-500/70">
+                    <div id="boss-hp-bar" class="h-full bg-gradient-to-r from-purple-600 via-fuchsia-500 to-rose-500 transition-all duration-150" style="width: 100%;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 우측: 마정석(SP 포인트), 시점전환, 여신상 강화, 사운드, 도움말 -->
+        <div class="flex flex-wrap items-center gap-1.5">
+            <div class="px-2.5 py-1 rounded-lg bg-slate-900 border border-amber-500/40 text-xs font-black text-amber-300" title="적 처치 시 획득하는 마정석(SP)">
+                💎 <span id="gold-text">0 SP</span>
+            </div>
+            <button id="view-toggle" class="px-2.5 py-1.5 rounded-lg bg-indigo-700 hover:bg-indigo-600 border border-indigo-300 text-xs font-black text-white shadow">
+                🎥 쿼터뷰 (V)
+            </button>
+            <button id="shop-toggle" class="px-2.5 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-600 border border-amber-300 text-xs font-black text-white shadow">
+                🕊️ 여신상 강화 (B)
+            </button>
+            <button id="sound-toggle" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-bold text-slate-200">
+                🔊 BGM
+            </button>
+            <button id="help-toggle" class="px-2.5 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-600 border border-teal-300 text-xs font-black text-white shadow">
+                ❓ 가이드
+            </button>
+        </div>
+    </header>
+
+    <!-- 메인 3D 게임 화면 -->
+    <main id="game-wrapper">
+        <div id="three-container"></div>
+        <div id="floating-layer" class="absolute inset-0 pointer-events-none overflow-hidden z-10"></div>
+
+        <!-- 좌측 상단 탑 층수 & 포탈 나침반 -->
+        <div id="portal-guide" class="absolute top-3 left-3 bg-slate-950/80 border border-amber-500/30 rounded-xl px-3 py-2 text-[11px] space-y-1 pointer-events-none z-10 backdrop-blur-sm">
+            <div id="guide-next-door" class="text-slate-400 font-bold">🚪 상층 계단문: 마물 전멸 시 개방</div>
+            <div id="guide-prev-door" class="text-sky-400 font-bold hidden">🌀 하층 계단문: 이전 층으로 귀환</div>
+            <div id="guide-statue" class="text-amber-300 font-bold hidden">🕊️ 여신의 석상 출현! (다가가면 HP 회복 & 강화)</div>
+        </div>
+
+        <!-- 우측 상단 콤보 카운터 -->
+        <div id="combo-hud" class="hidden absolute top-3 right-4 ys-title text-2xl sm:text-3xl font-black text-amber-400 pointer-events-none z-10">
+            0 HIT!
+        </div>
+
+        <!-- 도움말 모달 -->
+        <div id="help-modal" class="hidden absolute inset-0 bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center p-4 z-30">
+            <div class="w-full max-w-xl bg-slate-900 border-2 border-amber-400/60 rounded-2xl p-5 shadow-2xl max-h-[90%] overflow-y-auto text-left">
+                <div class="flex items-center justify-between border-b border-slate-700 pb-3 mb-3">
+                    <h2 class="ys-title text-xl sm:text-2xl font-black text-amber-300">YS ORIGIN · 다암의 탑 공략 가이드</h2>
+                    <button id="close-help-btn" class="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 border border-slate-600">닫기</button>
+                </div>
+                <div class="space-y-3 text-xs sm:text-sm text-slate-200 leading-relaxed">
+                    <div class="bg-slate-950/70 p-3 rounded-xl border border-slate-800">
+                        <div class="font-black text-amber-400 mb-1">⚔️ 3인의 주인공 고유 전투 스타일</div>
+                        <p>• <b>유니카 토바</b>: 대검과 도끼를 휘두르는 근접 연타형. 3단 회전 베기와 화염·바람·번개 정령 스킬로 적진을 돌파합니다.</p>
+                        <p>• <b>휴고 팩트</b>: 2개의 마법 구체 <b>'팩트 아이'</b>로 원거리 마탄을 연사하며, 적 탄막을 막아내는 결계와 광역 마법을 구사합니다.</p>
+                        <p>• <b>토르 팩트</b>: 양손의 클로로 초고속 난무를 펼치는 근접 스피드형. 암흑 마력 베기와 폭발적인 연타가 특징입니다.</p>
+                    </div>
+                    <div class="bg-slate-950/70 p-3 rounded-xl border border-slate-800">
+                        <div class="font-black text-fuchsia-400 mb-1">🔥 부스트 (BOOST) & EX 스페셜 아츠 (R / F 키)</div>
+                        <p>• 공격 시 차오르는 <b>BOOST 게이지</b>가 100%가 되면 <b>각성(BOOST)</b>에 돌입해 공격속도·이동속도가 폭증합니다.</p>
+                        <p>• <b>부스트 발동 중에 R / F 키(또는 궁극기 버튼)를 한 번 더 누르면</b> 초필살기 <b>EX 스페셜 아츠</b>가 발동합니다!</p>
+                    </div>
+                    <div class="bg-slate-950/70 p-3 rounded-xl border border-slate-800">
+                        <div class="font-black text-emerald-400 mb-1">🕊️ 여신의 석상 & 마정석(SP) 강화</div>
+                        <p>• 층의 마물을 전멸시키면 중앙에 <b>피나 & 레아 여신의 석상</b>이 나타납니다. 석상에 다가가면 체력이 회복되며, 모은 <b>마정석(SP)</b>으로 무기와 방어구를 강화할 수 있습니다.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 여신의 석상 (축복 & 장비/스킬 강화 모달) -->
+        <div id="shop-modal" class="hidden absolute inset-0 bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center p-4 z-30">
+            <div class="w-full max-w-2xl bg-slate-900 border-2 border-amber-400/70 rounded-2xl p-4 sm:p-6 shadow-2xl max-h-[90%] overflow-y-auto">
+                <div class="flex items-center justify-between border-b border-slate-700 pb-3 mb-4">
+                    <div>
+                        <h2 class="ys-title text-xl sm:text-2xl font-black text-amber-300">STATUE OF THE GODDESSES</h2>
+                        <p class="text-xs text-slate-300">여신 피나와 레아의 축복으로 무구와 갑주를 연성합니다.</p>
+                    </div>
+                    <div class="text-right">
+                        <span class="text-xs text-slate-400 block">보유 마정석</span>
+                        <span id="shop-gold-text" class="text-lg font-black text-amber-300">0 SP</span>
+                    </div>
+                </div>
+
+                <!-- 현재 스탯 요약 -->
+                <div class="grid grid-cols-4 gap-2 bg-slate-950/80 p-3 rounded-xl border border-slate-800 mb-4 text-center text-xs">
+                    <div><span class="text-slate-400">레벨:</span> <b id="stat-lv" class="text-amber-300">LV.1</b></div>
+                    <div><span class="text-slate-400">STR(공격):</span> <b id="stat-atk" class="text-rose-400">16</b></div>
+                    <div><span class="text-slate-400">DEF(방어):</span> <b id="stat-def" class="text-sky-400">0</b></div>
+                    <div><span class="text-slate-400">최대 HP:</span> <b id="stat-hp" class="text-emerald-400">100</b></div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <h3 class="text-sm font-black text-rose-400 mb-2">⚔️ 무구 연성 (WEAPONS)</h3>
+                        <div id="weapon-list" class="flex flex-col gap-2"></div>
+                    </div>
+                    <div>
+                        <h3 class="text-sm font-black text-sky-400 mb-2">🛡️ 갑주 연성 (ARMORS)</h3>
+                        <div id="armor-list" class="flex flex-col gap-2"></div>
+                    </div>
+                </div>
+
+                <div class="mt-5 flex justify-end">
+                    <button id="close-shop-btn" class="px-6 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black text-sm border border-amber-300">
+                        탑 공략 재개 (ESC / B)
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 타이틀 및 <이스 오리진> 3인 주인공 선택 화면 -->
+        <div id="overlay-screen" class="absolute inset-0 bg-slate-950/92 backdrop-blur-md flex flex-col items-center justify-center p-4 sm:p-6 text-center z-20 overflow-y-auto">
+            <p class="text-amber-400 font-bold tracking-widest text-xs sm:text-sm mb-1">NIHON FALCOM STYLE ACTION RPG</p>
+            <h1 id="overlay-title" class="ys-title text-3xl sm:text-5xl font-black text-white mb-1">YS ORIGIN 3D</h1>
+            <p id="overlay-subtitle" class="text-slate-300 text-xs sm:text-sm max-w-xl mb-4">
+                사라진 두 여신 <b>피나</b>와 <b>레아</b>를 찾아 마물들이 우글거리는 <b>다암의 탑</b>을 오르세요!
+            </p>
+
+            <!-- 3인의 주인공 선택 카드 -->
+            <div id="character-select-grid" class="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full max-w-3xl mb-5">
+                <!-- 1. 유니카 토바 -->
+                <div data-char="yunica" class="char-card selected cursor-pointer rounded-2xl border-2 border-slate-700 bg-slate-900/90 p-3.5 text-left flex flex-col justify-between">
+                    <div>
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="px-2 py-0.5 rounded bg-rose-600/30 border border-rose-500 text-[10px] font-black text-rose-300">근접 연타 · 기사</span>
+                            <span class="text-xs font-black text-amber-400">★ 추천</span>
+                        </div>
+                        <h3 class="text-base sm:text-lg font-black text-white">유니카 토바</h3>
+                        <p class="text-[11px] text-slate-300 mt-1 leading-relaxed">
+                            대검과 도끼를 휘두르는 신전 기사 견습생. 3단 회전 베기와 <b>홍련·선풍·금강</b> 정령 스킬을 구사합니다.
+                        </p>
+                    </div>
+                    <div class="mt-3 pt-2 border-t border-slate-800 text-[10px] text-amber-300 font-bold">
+                        EX 필살기: 불사조의 검무
+                    </div>
+                </div>
+
+                <!-- 2. 휴고 팩트 -->
+                <div data-char="hugo" class="char-card cursor-pointer rounded-2xl border-2 border-slate-700 bg-slate-900/90 p-3.5 text-left flex flex-col justify-between">
+                    <div>
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="px-2 py-0.5 rounded bg-sky-600/30 border border-sky-500 text-[10px] font-black text-sky-300">원거리 마도사</span>
+                            <span class="text-xs font-black text-sky-300">팩트 아이</span>
+                        </div>
+                        <h3 class="text-base sm:text-lg font-black text-white">휴고 팩트</h3>
+                        <p class="text-[11px] text-slate-300 mt-1 leading-relaxed">
+                            양옆의 마도구 <b>'팩트 아이'</b>로 원거리 마탄을 연속 발사하고, <b>결계 배리어</b>와 광역 마법을 사용합니다.
+                        </p>
+                    </div>
+                    <div class="mt-3 pt-2 border-t border-slate-800 text-[10px] text-sky-300 font-bold">
+                        EX 필살기: 심판의 성광 포격
+                    </div>
+                </div>
+
+                <!-- 3. 토르 팩트 -->
+                <div data-char="toal" class="char-card cursor-pointer rounded-2xl border-2 border-slate-700 bg-slate-900/90 p-3.5 text-left flex flex-col justify-between">
+                    <div>
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="px-2 py-0.5 rounded bg-purple-600/30 border border-purple-500 text-[10px] font-black text-purple-300">초고속 클로 · 마인</span>
+                            <span class="text-xs font-black text-purple-300">초고속 난무</span>
+                        </div>
+                        <h3 class="text-base sm:text-lg font-black text-white">토르 팩트</h3>
+                        <p class="text-[11px] text-slate-300 mt-1 leading-relaxed">
+                            양손의 클로로 압도적인 연타 속도를 자랑하는 마인. 암흑 돌진기와 광역 충격파로 적을 섬멸합니다.
+                        </p>
+                    </div>
+                    <div class="mt-3 pt-2 border-t border-slate-800 text-[10px] text-purple-300 font-bold">
+                        EX 필살기: 암흑 섬멸 난무
+                    </div>
+                </div>
+            </div>
+
+            <div id="overlay-desc" class="text-amber-300 font-semibold text-[11px] sm:text-xs mb-4">
+                [이동] WASD / 방향키 &nbsp;|&nbsp; [공격] Z/J/클릭 &nbsp;|&nbsp; [점프] X/K &nbsp;|&nbsp; [정령스킬] C/L &nbsp;|&nbsp; [부스트/EX] R/F &nbsp;|&nbsp; [시점] V
+            </div>
+
+            <div class="flex flex-wrap items-center justify-center gap-3">
+                <button id="overlay-help-btn" class="px-5 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-teal-300 font-black text-sm border border-teal-500/60 transition">
+                    ❓ 조작 및 시스템 가이드
+                </button>
+                <button id="start-btn" class="px-8 py-3.5 rounded-xl bg-gradient-to-r from-amber-600 to-rose-600 hover:from-amber-500 hover:to-rose-500 text-white font-black text-base sm:text-lg shadow-lg shadow-amber-600/30 border border-amber-300/60 transition transform hover:scale-105 active:scale-95">
+                    다암의 탑 등반 시작 (START)
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <!-- 하단 컨트롤러 바 (체력 중심 원형 링 게이지 HUD + 액션 버튼) -->
+    <footer class="w-full px-3 py-1.5 bg-slate-950/95 border-t border-slate-800 flex items-center justify-between gap-2 z-10">
+        <!-- 좌측: 정령 스킬 전환 & 발동 & 대시 -->
+        <div class="flex items-center gap-1.5 sm:gap-2">
+            <button id="btn-switch-skill" data-action="switchSkill" class="action-btn w-12 h-14 sm:w-14 sm:h-16 rounded-2xl flex flex-col items-center justify-center text-white border-purple-500">
+                <span class="text-[10px] font-black text-purple-300">스킬교체</span>
+                <span class="text-[9px] text-slate-300">Q 키</span>
+            </button>
+            <button id="btn-skill" data-action="skill" class="action-btn btn-amber w-14 h-14 sm:w-16 sm:h-16 rounded-2xl flex flex-col items-center justify-center text-white">
+                <span id="skill-btn-name" class="text-[11px] sm:text-xs font-black">홍련의검</span>
+                <span id="skill-btn-cost" class="text-[9px] text-amber-200">SP 25</span>
+            </button>
+            <button id="btn-dash" data-action="dash" class="action-btn btn-emerald w-12 h-14 sm:w-14 sm:h-16 rounded-2xl flex flex-col items-center justify-center text-white">
+                <span class="text-xs font-black">회피대시</span>
+                <span class="text-[9px] text-emerald-200">Space</span>
+            </button>
+        </div>
+
+        <!-- 중앙: 체력(HP) 중심 원형 링 게이지 (바깥부터 BOOST/EX 링 -> SP 링 -> 스킬 준비 링 -> 중앙 HP 코어) -->
+        <div class="relative flex items-center justify-center">
+            <div class="relative w-24 h-24 sm:w-28 sm:h-28 flex items-center justify-center">
+                <svg viewBox="0 0 120 120" class="w-full h-full -rotate-90 drop-shadow-[0_0_10px_rgba(0,0,0,0.9)]">
+                    <!-- 1) 최외곽 링: BOOST & EX 게이지 (r=54) -->
+                    <circle cx="60" cy="60" r="54" fill="none" stroke="#1e1b4b" stroke-width="5.5" />
+                    <circle id="ring-burst" cx="60" cy="60" r="54" fill="none" stroke="#f59e0b" stroke-width="5.5"
+                            stroke-linecap="round" stroke-dasharray="339.29" stroke-dashoffset="339.29" class="transition-all duration-150" />
+
+                    <!-- 2) 중간 링: SP(스킬 파워) 게이지 (r=46) -->
+                    <circle cx="60" cy="60" r="46" fill="none" stroke="#422006" stroke-width="5.5" />
+                    <circle id="ring-mp" cx="60" cy="60" r="46" fill="none" stroke="#fbbf24" stroke-width="5.5"
+                            stroke-linecap="round" stroke-dasharray="289.03" stroke-dashoffset="0" class="transition-all duration-150" />
+
+                    <!-- 3) 내측 링: 정령 스킬 사용 가능 게이지 (r=38) -->
+                    <circle cx="60" cy="60" r="38" fill="none" stroke="#083344" stroke-width="5" />
+                    <circle id="ring-skill" cx="60" cy="60" r="38" fill="none" stroke="#38bdf8" stroke-width="5"
+                            stroke-linecap="round" stroke-dasharray="238.76" stroke-dashoffset="0" class="transition-all duration-150" />
+
+                    <!-- 4) 중앙 코어 원 배경: 체력(HP) -->
+                    <circle cx="60" cy="60" r="32" fill="#0f172a" stroke="#334155" stroke-width="1.5" />
+                </svg>
+
+                <!-- 중앙 HP 코어 -->
+                <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                    <div id="hp-core-circle" class="w-14 h-14 sm:w-16 sm:h-16 rounded-full flex flex-col items-center justify-center border border-rose-500/50 transition-all duration-150"
+                         style="background: radial-gradient(circle, rgba(225,29,72,0.85) 0%, rgba(136,19,55,0.95) 100%);">
+                        <span class="text-[9px] font-black text-rose-200 tracking-wider leading-none">HP</span>
+                        <span id="hp-text" class="text-xs sm:text-sm font-black text-white leading-tight">100</span>
+                        <span id="ring-status-mini" class="text-[8px] font-bold text-amber-300 leading-none">SP 100</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="hidden md:flex flex-col text-[10px] font-bold ml-2 space-y-0.5 text-left">
+                <div class="text-rose-400">● HP: <span id="legend-hp">100/100</span></div>
+                <div class="text-amber-400">● SP: <span id="legend-mp">100/100</span></div>
+                <div class="text-sky-400">● 정령: <span id="legend-skill">준비완료</span></div>
+                <div class="text-fuchsia-400">● BOOST: <span id="legend-burst">0%</span></div>
+            </div>
+        </div>
+
+        <!-- 우측: 부스트/EX 스페셜 & 점프 & 공격 -->
+        <div class="flex items-center gap-1.5 sm:gap-2">
+            <button id="btn-ultimate" data-action="ultimate" class="action-btn w-14 h-14 sm:w-16 sm:h-16 rounded-2xl flex flex-col items-center justify-center text-white border-amber-500 opacity-50">
+                <span id="boost-btn-label" class="text-[11px] font-black text-amber-300">BOOST</span>
+                <span class="text-[9px] text-slate-300">R / F</span>
+            </button>
+            <button id="btn-jump" data-action="jump" class="action-btn btn-blue w-12 h-14 sm:w-14 sm:h-16 rounded-2xl flex flex-col items-center justify-center text-white">
+                <span class="text-xs font-black">점프</span>
+                <span class="text-[9px] text-blue-200">X / K</span>
+            </button>
+            <button id="btn-attack" data-action="attack" class="action-btn btn-red w-15 h-14 sm:w-18 sm:h-16 rounded-2xl flex flex-col items-center justify-center text-white">
+                <span class="text-xs sm:text-sm font-black">공격</span>
+                <span class="text-[9px] text-red-200">Z / J</span>
+            </button>
+        </div>
+    </footer>
+
+<script>
+/**
+ * YS ORIGIN 3D (이스 오리진 3D)
+ * - 3인의 주인공 (유니카 토바 / 휴고 팩트 / 토르 팩트)
+ * - 다암의 탑 6대 영역 (수계·화계·사계·마계·환계·최심부) & 30층 보스 러시
+ * - 부스트(BOOST) 각성 & 2단계 발동 EX 스페셜 아츠
+ * - 여신의 석상 (HP 회복 및 마정석 무구/갑주 연성)
+ */
+
+const threeContainer = document.getElementById('three-container');
+const floatingLayer = document.getElementById('floating-layer');
+const comboHud = document.getElementById('combo-hud');
+
+let ARENA_HALF_W = 22;
+let ARENA_HALF_D = 22;
+const TOTAL_STAGES = 30; // 다암의 탑 30층 (5층마다 각 영역의 수호 보스 등장!)
+
+// Three.js 핵심 객체
+let scene, camera, renderer;
+let stageMapGroup;
+let dirLight, rimLight;
+let playerMesh, swordBladeMesh, armorChestMesh, slashArcMesh, shieldSphereMesh, whirlwindMesh, boostAuraMesh;
+let factEyeL, factEyeR; // 휴고 팩트 전용 마도구
+let nextDoorGroup, nextDoorPortalMesh, prevDoorGroup, prevDoorPortalMesh;
+let statueGroup; // 여신의 석상
+let nextDoorOpen = false;
+let statueActive = false;
+let statueHealCooldown = 0;
+
+let cameraMode = 'QUARTER'; // 'QUARTER' (원작 이스 오리진 쿼터뷰) | 'THIRD' (3인칭 백뷰)
+let cameraYaw = Math.PI;
+
+// UI 요소
+const charBadge = document.getElementById('char-badge');
+const heroNameHud = document.getElementById('hero-name-hud');
+const lvText = document.getElementById('lv-text');
+const expText = document.getElementById('exp-text');
+const expBar = document.getElementById('exp-bar');
+const doorStatusBadge = document.getElementById('door-status-badge');
+const guideNextDoor = document.getElementById('guide-next-door');
+const guidePrevDoor = document.getElementById('guide-prev-door');
+const guideStatue = document.getElementById('guide-statue');
+const viewToggleBtn = document.getElementById('view-toggle');
+
+// 원형 링 HUD 요소
+const ringBurst = document.getElementById('ring-burst');
+const ringMp = document.getElementById('ring-mp');
+const ringSkill = document.getElementById('ring-skill');
+const hpCoreCircle = document.getElementById('hp-core-circle');
+const hpText = document.getElementById('hp-text');
+const ringStatusMini = document.getElementById('ring-status-mini');
+const legendHp = document.getElementById('legend-hp');
+const legendMp = document.getElementById('legend-mp');
+const legendSkill = document.getElementById('legend-skill');
+const legendBurst = document.getElementById('legend-burst');
+
+const CIRC_BURST = 2 * Math.PI * 54;
+const CIRC_MP    = 2 * Math.PI * 46;
+const CIRC_SKILL = 2 * Math.PI * 38;
+
+const btnUltimate = document.getElementById('btn-ultimate');
+const boostBtnLabel = document.getElementById('boost-btn-label');
+const goldText = document.getElementById('gold-text');
+const stageLabel = document.getElementById('stage-label');
+const bossHud = document.getElementById('boss-hud');
+const bossNameLabel = document.getElementById('boss-name-label');
+const bossHpBar = document.getElementById('boss-hp-bar');
+const overlayScreen = document.getElementById('overlay-screen');
+const overlayTitle = document.getElementById('overlay-title');
+const overlaySubtitle = document.getElementById('overlay-subtitle');
+const startBtn = document.getElementById('start-btn');
+const soundToggleBtn = document.getElementById('sound-toggle');
+const helpToggleBtn = document.getElementById('help-toggle');
+const overlayHelpBtn = document.getElementById('overlay-help-btn');
+const helpModal = document.getElementById('help-modal');
+const closeHelpBtn = document.getElementById('close-help-btn');
+
+const shopModal = document.getElementById('shop-modal');
+const shopToggleBtn = document.getElementById('shop-toggle');
+const closeShopBtn = document.getElementById('close-shop-btn');
+const shopGoldText = document.getElementById('shop-gold-text');
+const weaponListEl = document.getElementById('weapon-list');
+const armorListEl = document.getElementById('armor-list');
+const statLvEl = document.getElementById('stat-lv');
+const statAtkEl = document.getElementById('stat-atk');
+const statDefEl = document.getElementById('stat-def');
+const statHpEl = document.getElementById('stat-hp');
+const skillBtnName = document.getElementById('skill-btn-name');
+const skillBtnCost = document.getElementById('skill-btn-cost');
+
+// ==========================================
+// 1. <이스 오리진> 3인 주인공 데이터 정의
+// ==========================================
+const HEROES = {
+    yunica: {
+        id: 'yunica',
+        name: 'YUNICA TOVAH',
+        koName: '유니카 토바',
+        hairColor: 0xe11d48,
+        outfitColor: 0xf8fafc,
+        capeColor: 0xb91c1c,
+        badgeClass: 'from-rose-600 to-amber-500',
+        baseAtk: 17,
+        speed: 14.5,
+        attackStyle: 'melee',
+        exName: 'EX: 불사조의 검무!!',
+        skills: [
+            { id: 'fire', name: '홍련의검', cost: 25, btnClass: 'btn-amber', desc: '화염 검기 3연사' },
+            { id: 'wind', name: '선풍의도끼', cost: 30, btnClass: 'btn-emerald', desc: '주변 회오리 & 탄막 제거' },
+            { id: 'thunder', name: '금강의사자', cost: 35, btnClass: 'btn-blue', desc: '번개 돌진 & 무적 보호막' }
+        ]
+    },
+    hugo: {
+        id: 'hugo',
+        name: 'HUGO FACT',
+        koName: '휴고 팩트',
+        hairColor: 0xe2e8f0,
+        outfitColor: 0x1e3a8a,
+        capeColor: 0x1d4ed8,
+        badgeClass: 'from-sky-600 to-indigo-600',
+        baseAtk: 14,
+        speed: 13.8,
+        attackStyle: 'ranged',
+        exName: 'EX: 심판의 성광 포격!!',
+        skills: [
+            { id: 'fire', name: '폭염의마탄', cost: 25, btnClass: 'btn-amber', desc: '관통 화염구 5연발' },
+            { id: 'wind', name: '결계배리어', cost: 30, btnClass: 'btn-blue', desc: '전방위 결계 & HP 회복' },
+            { id: 'thunder', name: '뇌전의기둥', cost: 35, btnClass: 'btn-emerald', desc: '주변 전격 폭발' }
+        ]
+    },
+    toal: {
+        id: 'toal',
+        name: 'TOAL FACT',
+        koName: '토르 팩트',
+        hairColor: 0x94a3b8,
+        outfitColor: 0x3b0764,
+        capeColor: 0x581c87,
+        badgeClass: 'from-purple-700 to-fuchsia-600',
+        baseAtk: 16,
+        speed: 16.5,
+        attackStyle: 'claw',
+        exName: 'EX: 암흑 섬멸 난무!!',
+        skills: [
+            { id: 'fire', name: '암흑충격파', cost: 25, btnClass: 'btn-amber', desc: '암흑 검기 3갈래 발사' },
+            { id: 'wind', name: '질풍난무', cost: 28, btnClass: 'btn-emerald', desc: '초고속 회전 할퀴기' },
+            { id: 'thunder', name: '마인의가호', cost: 38, btnClass: 'btn-blue', desc: '흡혈 회복 & 무적 오라' }
+        ]
+    }
+};
+
+let selectedHeroKey = 'yunica';
+let currentHero = HEROES.yunica;
+
+document.querySelectorAll('.char-card').forEach(card => {
+    card.addEventListener('click', () => {
+        document.querySelectorAll('.char-card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+        selectedHeroKey = card.getAttribute('data-char');
+        currentHero = HEROES[selectedHeroKey];
+    });
+});
+
+// ==========================================
+// 2. Web Audio API 팔콤(jdk BAND) 스타일 BGM & 효과음
+// ==========================================
+let soundEnabled = true;
+let audioCtx = null;
+let bgmTimer = null;
+let bgmStep = 0;
+
+function initAudio() {
+    if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+}
+
+soundToggleBtn.addEventListener('click', () => {
+    soundEnabled = !soundEnabled;
+    soundToggleBtn.textContent = soundEnabled ? '🔊 BGM' : '🔇 음소거';
+    if (soundEnabled && (gameState === 'PLAYING' || gameState === 'SHOP')) {
+        startBGM();
+    } else {
+        stopBGM();
+    }
+});
+
+function startBGM() {
+    if (!soundEnabled) return;
+    initAudio();
+    if (bgmTimer) return;
+
+    // 이스 오리진 <TOWER OF THE SHADOW OF DEATH> & <SCARLET TEMPEST> 풍 멜로디
+    const fieldMelody = [659.25, 0, 659.25, 783.99, 987.77, 880.00, 783.99, 659.25, 587.33, 0, 587.33, 659.25, 783.99, 659.25, 587.33, 493.88];
+    const fieldBass   = [164.81, 164.81, 164.81, 164.81, 130.81, 130.81, 146.83, 146.83, 164.81, 164.81, 164.81, 164.81, 196.00, 196.00, 146.83, 146.83];
+
+    const bossMelody  = [659.25, 698.46, 659.25, 587.33, 659.25, 987.77, 932.33, 880.00, 783.99, 880.00, 783.99, 698.46, 659.25, 587.33, 493.88, 659.25];
+    const bossBass    = [164.81, 164.81, 174.61, 174.61, 164.81, 164.81, 196.00, 196.00, 130.81, 130.81, 146.83, 146.83, 123.47, 123.47, 146.83, 164.81];
+    const bossHarmony = [987.77, 1046.50, 987.77, 880.00, 987.77, 1318.51, 1244.51, 1174.66, 1046.50, 1174.66, 1046.50, 987.77, 987.77, 880.00, 739.99, 987.77];
+
+    bgmTimer = setInterval(() => {
+        if (!soundEnabled || !audioCtx || (gameState !== 'PLAYING' && gameState !== 'SHOP')) return;
+        const now = audioCtx.currentTime;
+        const isBoss = (wave % 5 === 0 && enemies.some(e => e.type === 'boss' || e.type === 'midboss'));
+        const melArr = isBoss ? bossMelody : fieldMelody;
+        const basArr = isBoss ? bossBass : fieldBass;
+
+        const mFreq = melArr[bgmStep % 16];
+        const bFreq = basArr[bgmStep % 16];
+
+        if (mFreq > 0) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(mFreq, now);
+            gain.gain.setValueAtTime(isBoss ? 0.05 : 0.038, now);
+            gain.gain.exponentialRampToValueAtTime(0.003, now + 0.14);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(now);
+            osc.stop(now + 0.15);
+        }
+
+        if (isBoss) {
+            const hFreq = bossHarmony[bgmStep % 16];
+            if (hFreq > 0) {
+                const hOsc = audioCtx.createOscillator();
+                const hGain = audioCtx.createGain();
+                hOsc.type = 'square';
+                hOsc.frequency.setValueAtTime(hFreq, now);
+                hGain.gain.setValueAtTime(0.022, now);
+                hGain.gain.exponentialRampToValueAtTime(0.002, now + 0.15);
+                hOsc.connect(hGain);
+                hGain.connect(audioCtx.destination);
+                hOsc.start(now);
+                hOsc.stop(now + 0.16);
+            }
+        }
+
+        if (bFreq > 0) {
+            const bOsc = audioCtx.createOscillator();
+            const bGain = audioCtx.createGain();
+            bOsc.type = isBoss ? 'sawtooth' : 'triangle';
+            bOsc.frequency.setValueAtTime(bFreq, now);
+            bGain.gain.setValueAtTime(isBoss ? 0.07 : 0.055, now);
+            bGain.gain.exponentialRampToValueAtTime(0.005, now + 0.12);
+            bOsc.connect(bGain);
+            bGain.connect(audioCtx.destination);
+            bOsc.start(now);
+            bOsc.stop(now + 0.13);
+        }
+
+        bgmStep++;
+    }, 145);
+}
+
+function stopBGM() {
+    if (bgmTimer) {
+        clearInterval(bgmTimer);
+        bgmTimer = null;
+    }
+}
+
+function playSound(type) {
+    if (!soundEnabled) return;
+    initAudio();
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    if (type === 'slash1' || type === 'slash2' || type === 'slash3') {
+        const baseFreq = type === 'slash1' ? 540 : (type === 'slash2' ? 680 : 920);
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(baseFreq, now);
+        osc.frequency.exponentialRampToValueAtTime(140, now + 0.12);
+        gain.gain.setValueAtTime(0.22, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.12);
+        osc.start(now);
+        osc.stop(now + 0.13);
+    } else if (type === 'magic') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, now);
+        osc.frequency.exponentialRampToValueAtTime(340, now + 0.09);
+        gain.gain.setValueAtTime(0.18, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.09);
+        osc.start(now);
+        osc.stop(now + 0.1);
+    } else if (type === 'hit') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(190, now);
+        osc.frequency.exponentialRampToValueAtTime(55, now + 0.09);
+        gain.gain.setValueAtTime(0.26, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.09);
+        osc.start(now);
+        osc.stop(now + 0.1);
+    } else if (type === 'skill') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(320, now);
+        osc.frequency.exponentialRampToValueAtTime(920, now + 0.18);
+        gain.gain.setValueAtTime(0.24, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.22);
+        osc.start(now);
+        osc.stop(now + 0.23);
+    } else if (type === 'jump') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(240, now);
+        osc.frequency.exponentialRampToValueAtTime(520, now + 0.14);
+        gain.gain.setValueAtTime(0.18, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.14);
+        osc.start(now);
+        osc.stop(now + 0.15);
+    } else if (type === 'dash') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(420, now);
+        osc.frequency.exponentialRampToValueAtTime(120, now + 0.11);
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.11);
+        osc.start(now);
+        osc.stop(now + 0.12);
+    } else if (type === 'pickup' || type === 'levelup') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(type === 'levelup' ? 523.25 : 587.33, now);
+        osc.frequency.setValueAtTime(type === 'levelup' ? 783.99 : 880, now + 0.08);
+        if (type === 'levelup') osc.frequency.setValueAtTime(1046.50, now + 0.16);
+        gain.gain.setValueAtTime(0.22, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.26);
+        osc.start(now);
+        osc.stop(now + 0.27);
+    } else if (type === 'portal') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.exponentialRampToValueAtTime(900, now + 0.28);
+        gain.gain.setValueAtTime(0.24, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+        osc.start(now);
+        osc.stop(now + 0.31);
+    } else if (type === 'hurt') {
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(130, now);
+        osc.frequency.linearRampToValueAtTime(70, now + 0.2);
+        gain.gain.setValueAtTime(0.28, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+        osc.start(now);
+        osc.stop(now + 0.21);
+    } else if (type === 'ultimate') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(180, now);
+        osc.frequency.exponentialRampToValueAtTime(1150, now + 0.35);
+        gain.gain.setValueAtTime(0.35, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.55);
+        osc.start(now);
+        osc.stop(now + 0.56);
+    }
+}
+
+// ==========================================
+// 3. Three.js 3D 씬 & 다암의 탑 6대 영역 빌더
+// ==========================================
+function initThreeJS() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x070a12);
+    scene.fog = new THREE.FogExp2(0x070a12, 0.018);
+
+    const w = threeContainer.clientWidth || window.innerWidth;
+    const h = threeContainer.clientHeight || window.innerHeight;
+    camera = new THREE.PerspectiveCamera(58, w / h, 0.1, 180);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(w, h);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    threeContainer.appendChild(renderer.domElement);
+
+    const ambientLight = new THREE.AmbientLight(0x94a3b8, 0.78);
+    scene.add(ambientLight);
+
+    dirLight = new THREE.DirectionalLight(0xfffbeb, 1.15);
+    dirLight.position.set(16, 34, 20);
+    dirLight.castShadow = true;
+    dirLight.shadow.mapSize.width = 1024;
+    dirLight.shadow.mapSize.height = 1024;
+    scene.add(dirLight);
+
+    rimLight = new THREE.PointLight(0xf59e0b, 1.2, 65);
+    rimLight.position.set(0, 10, 0);
+    scene.add(rimLight);
+
+    stageMapGroup = new THREE.Group();
+    scene.add(stageMapGroup);
+
+    createPlayer3DMesh();
+    window.addEventListener('resize', onWindowResize);
+}
+
+function onWindowResize() {
+    if (!renderer || !camera) return;
+    const w = threeContainer.clientWidth || window.innerWidth;
+    const h = threeContainer.clientHeight || window.innerHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+}
+
+// 3D 주인공 캐릭터 모델 (선택한 캐릭터에 따라 머리/복장/무기/팩트아이 실시간 적용)
+function createPlayer3DMesh() {
+    if (playerMesh) scene.remove(playerMesh);
+    playerMesh = new THREE.Group();
+
+    const skinMat = new THREE.MeshStandardMaterial({ color: 0xfed7aa, roughness: 0.6 });
+    const hairMat = new THREE.MeshStandardMaterial({ color: currentHero.hairColor, roughness: 0.45 });
+    const capeMat = new THREE.MeshStandardMaterial({ color: currentHero.capeColor, side: THREE.DoubleSide, roughness: 0.65 });
+    const bootMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5 });
+
+    // 양다리
+    const legGeo = new THREE.CylinderGeometry(0.13, 0.11, 0.62, 8);
+    const legLPivot = new THREE.Group();
+    legLPivot.position.set(-0.2, 0.62, 0);
+    const legL = new THREE.Mesh(legGeo, bootMat);
+    legL.position.y = -0.31;
+    legL.castShadow = true;
+    legLPivot.add(legL);
+
+    const legRPivot = new THREE.Group();
+    legRPivot.position.set(0.2, 0.62, 0);
+    const legR = new THREE.Mesh(legGeo, bootMat);
+    legR.position.y = -0.31;
+    legR.castShadow = true;
+    legRPivot.add(legR);
+
+    playerMesh.add(legLPivot, legRPivot);
+    playerMesh.userData.legL = legLPivot;
+    playerMesh.userData.legR = legRPivot;
+
+    // 상체 복장/갑옷
+    const chestMat = new THREE.MeshStandardMaterial({ color: currentHero.outfitColor, metalness: 0.5, roughness: 0.35 });
+    armorChestMesh = new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.85, 0.46), chestMat);
+    armorChestMesh.position.y = 1.05;
+    armorChestMesh.castShadow = true;
+    playerMesh.add(armorChestMesh);
+
+    // 망토
+    const cape = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.95, 0.06), capeMat);
+    cape.position.set(0, 0.98, -0.27);
+    cape.rotation.x = 0.16;
+    cape.castShadow = true;
+    playerMesh.add(cape);
+    playerMesh.userData.cape = cape;
+
+    // 머리 & 머리카락
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 14, 14), skinMat);
+    head.position.y = 1.72;
+    head.castShadow = true;
+    playerMesh.add(head);
+
+    const hair = new THREE.Mesh(new THREE.SphereGeometry(0.35, 14, 14), hairMat);
+    hair.position.set(0, 1.78, -0.05);
+    hair.scale.set(1.05, 1.05, 1.15);
+    playerMesh.add(hair);
+
+    // 왼팔
+    const armGeo = new THREE.CylinderGeometry(0.1, 0.09, 0.58, 8);
+    const armLPivot = new THREE.Group();
+    armLPivot.position.set(-0.48, 1.38, 0);
+    const armL = new THREE.Mesh(armGeo, skinMat);
+    armL.position.y = -0.26;
+    armLPivot.add(armL);
+    playerMesh.add(armLPivot);
+    playerMesh.userData.armL = armLPivot;
+
+    // 오른팔 & 캐릭터별 무기
+    const armRPivot = new THREE.Group();
+    armRPivot.position.set(0.48, 1.38, 0);
+    const armR = new THREE.Mesh(armGeo, skinMat);
+    armR.position.y = -0.26;
+    armRPivot.add(armR);
+
+    const bladeMat = new THREE.MeshStandardMaterial({
+        color: 0xcbd5e1,
+        emissive: 0x38bdf8,
+        emissiveIntensity: 0.35,
+        metalness: 0.85,
+        roughness: 0.15
+    });
+
+    if (currentHero.id === 'yunica') {
+        const hilt = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.07, 0.09), new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.8 }));
+        hilt.position.set(0, -0.52, 0.12);
+        armRPivot.add(hilt);
+        swordBladeMesh = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.04, 1.65), bladeMat);
+        swordBladeMesh.position.set(0, -0.52, 0.95);
+        armRPivot.add(swordBladeMesh);
+    } else if (currentHero.id === 'hugo') {
+        // 마도 지팡이 + 양옆 부유 팩트 아이 2기
+        swordBladeMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.85, 8), bladeMat);
+        swordBladeMesh.rotation.x = Math.PI / 2;
+        swordBladeMesh.position.set(0, -0.48, 0.65);
+        armRPivot.add(swordBladeMesh);
+
+        const eyeGeo = new THREE.OctahedronGeometry(0.22, 0);
+        const eyeMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x0284c7, emissiveIntensity: 0.8 });
+        factEyeL = new THREE.Mesh(eyeGeo, eyeMat);
+        factEyeL.position.set(-0.95, 1.65, 0.25);
+        factEyeR = new THREE.Mesh(eyeGeo, eyeMat);
+        factEyeR.position.set(0.95, 1.65, 0.25);
+        playerMesh.add(factEyeL, factEyeR);
+    } else {
+        // 토르 팩트: 양손 클로(손톱)
+        swordBladeMesh = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.05, 0.95), bladeMat);
+        swordBladeMesh.position.set(0, -0.54, 0.52);
+        armRPivot.add(swordBladeMesh);
+
+        const leftClaw = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.05, 0.95), bladeMat);
+        leftClaw.position.set(0, -0.54, 0.52);
+        armLPivot.add(leftClaw);
+    }
+
+    playerMesh.add(armRPivot);
+    playerMesh.userData.armR = armRPivot;
+
+    // 전방 검격 웨이브 이펙트
+    const slashGeo = new THREE.RingGeometry(1.1, 2.35, 24, 1, -Math.PI * 0.45, Math.PI * 0.9);
+    const slashMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, transparent: true, opacity: 0.82 });
+    slashArcMesh = new THREE.Mesh(slashGeo, slashMat);
+    slashArcMesh.rotation.x = -Math.PI / 2;
+    slashArcMesh.rotation.z = -Math.PI / 2;
+    slashArcMesh.position.set(0, 1.0, 0.4);
+    slashArcMesh.visible = false;
+    playerMesh.add(slashArcMesh);
+
+    // 보호막 구체
+    shieldSphereMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(1.5, 18, 14),
+        new THREE.MeshBasicMaterial({ color: 0x38bdf8, wireframe: true, transparent: true, opacity: 0.48 })
+    );
+    shieldSphereMesh.position.y = 1.05;
+    shieldSphereMesh.visible = false;
+    playerMesh.add(shieldSphereMesh);
+
+    // 부스트(BOOST) 황금 각성 오라
+    boostAuraMesh = new THREE.Mesh(
+        new THREE.TorusGeometry(1.05, 0.08, 8, 28),
+        new THREE.MeshBasicMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.85 })
+    );
+    boostAuraMesh.rotation.x = Math.PI / 2;
+    boostAuraMesh.position.y = 0.12;
+    boostAuraMesh.visible = false;
+    playerMesh.add(boostAuraMesh);
+
+    // 선풍 회오리 링
+    whirlwindMesh = new THREE.Mesh(
+        new THREE.TorusGeometry(2.2, 0.12, 8, 28),
+        new THREE.MeshBasicMaterial({ color: 0x4ade80, transparent: true, opacity: 0.75 })
+    );
+    whirlwindMesh.rotation.x = Math.PI / 2;
+    whirlwindMesh.position.y = 1.0;
+    whirlwindMesh.visible = false;
+    playerMesh.add(whirlwindMesh);
+
+    scene.add(playerMesh);
+}
+
+// ==========================================
+// 3-1. 다암의 탑 6대 영역 테마 & 층별 3D 맵 생성기
+// ==========================================
+function seededRandom(seed) {
+    const x = Math.sin(seed * 9999.91) * 10000;
+    return x - Math.floor(x);
+}
+
+// 원작 <이스 오리진> 다암의 탑 6대 영역
+const TOWER_REALMS = [
+    { name: '수계의 영역 (Flooded Area)', floor: 0x132a3a, wall: 0x1e4058, accent: 0x38bdf8, fog: 0x07131d, bossName: '수계의 수호자 바쥬리온' },
+    { name: '화계의 영역 (Guilty Fire)', floor: 0x2f1515, wall: 0x4c1d1d, accent: 0xf97316, fog: 0x160707, bossName: '용암의 마수 게라르디' },
+    { name: '사계의 영역 (Silent Sands)', floor: 0x332717, wall: 0x574124, accent: 0xfbbf24, fog: 0x171108, bossName: '사막의 거신 니그틸거' },
+    { name: '마계의 영역 (Blighted Blood)', floor: 0x261433, wall: 0x43205c, accent: 0xd946ef, fog: 0x110718, bossName: '마계의 심판관 픽티모스' },
+    { name: '환계의 영역 (Demonic Core)', floor: 0x172536, wall: 0x2c425e, accent: 0x34d399, fog: 0x080f18, bossName: '환영의 기사 자바 & 쌍둥이' },
+    { name: '탑 최심부 (Altar of Darm)', floor: 0x2a1b12, wall: 0x6b3e11, accent: 0xfde047, fog: 0x120a05, bossName: '마왕 다레스 & 다암의 코어' }
+];
+
+function getRealmForFloor(floorNum) {
+    const idx = Math.min(TOWER_REALMS.length - 1, Math.floor((floorNum - 1) / 5));
+    return TOWER_REALMS[idx];
+}
+
+function buildStageMap(floorNum) {
+    while (stageMapGroup.children.length > 0) {
+        stageMapGroup.remove(stageMapGroup.children[0]);
+    }
+
+    const r1 = seededRandom(floorNum * 1.13);
+    const r2 = seededRandom(floorNum * 2.71);
+    const r3 = seededRandom(floorNum * 3.97);
+
+    ARENA_HALF_W = Math.round(19 + r1 * 10);
+    ARENA_HALF_D = Math.round(20 + r2 * 10);
+
+    const realm = getRealmForFloor(floorNum);
+
+    scene.background = new THREE.Color(realm.fog);
+    scene.fog = new THREE.FogExp2(realm.fog, 0.017);
+    if (rimLight) rimLight.color.setHex(realm.accent);
+
+    // 1) 석조 바닥
+    const floorMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(ARENA_HALF_W * 2 + 2, 1.5, ARENA_HALF_D * 2 + 2),
+        new THREE.MeshStandardMaterial({ color: realm.floor, roughness: 0.78, metalness: 0.2 })
+    );
+    floorMesh.position.y = -0.75;
+    floorMesh.receiveShadow = true;
+    stageMapGroup.add(floorMesh);
+
+    const gridHelper = new THREE.GridHelper(Math.max(ARENA_HALF_W, ARENA_HALF_D) * 2, 20, realm.accent, realm.wall);
+    gridHelper.position.y = 0.02;
+    gridHelper.material.opacity = 0.22;
+    gridHelper.material.transparent = true;
+    stageMapGroup.add(gridHelper);
+
+    // 2) 탑 외벽
+    const wallMat = new THREE.MeshStandardMaterial({ color: realm.wall, roughness: 0.85 });
+    const wallH = 6.5;
+    const northWall = new THREE.Mesh(new THREE.BoxGeometry(ARENA_HALF_W * 2 + 2, wallH, 1.2), wallMat);
+    northWall.position.set(0, wallH / 2, -ARENA_HALF_D - 0.6);
+    const southWall = new THREE.Mesh(new THREE.BoxGeometry(ARENA_HALF_W * 2 + 2, wallH, 1.2), wallMat);
+    southWall.position.set(0, wallH / 2, ARENA_HALF_D + 0.6);
+    const westWall = new THREE.Mesh(new THREE.BoxGeometry(1.2, wallH, ARENA_HALF_D * 2 + 2), wallMat);
+    westWall.position.set(-ARENA_HALF_W - 0.6, wallH / 2, 0);
+    const eastWall = new THREE.Mesh(new THREE.BoxGeometry(1.2, wallH, ARENA_HALF_D * 2 + 2), wallMat);
+    eastWall.position.set(ARENA_HALF_W + 0.6, wallH / 2, 0);
+    stageMapGroup.add(northWall, southWall, westWall, eastWall);
+
+    // 3) 중앙 유적 마법진
+    const ringRadius = 4.2 + r3 * 2.5;
+    const centerRing = new THREE.Mesh(
+        new THREE.RingGeometry(ringRadius, ringRadius + 0.35, 36),
+        new THREE.MeshBasicMaterial({ color: realm.accent, side: THREE.DoubleSide, transparent: true, opacity: 0.45 })
+    );
+    centerRing.rotation.x = -Math.PI / 2;
+    centerRing.position.y = 0.03;
+    stageMapGroup.add(centerRing);
+
+    // 4) 층별 고유 기둥 배치
+    const pillarCount = 2 + (floorNum % 4) * 2;
+    const pGeo = (floorNum % 2 === 0)
+        ? new THREE.BoxGeometry(1.5, 7.5, 1.5)
+        : new THREE.CylinderGeometry(0.85, 1.05, 7.5, 10);
+
+    for (let i = 0; i < pillarCount; i++) {
+        const pr1 = seededRandom(floorNum * 17.3 + i * 5.1);
+        const pr2 = seededRandom(floorNum * 29.7 + i * 8.3);
+        const px = (pr1 * 2 - 1) * (ARENA_HALF_W - 5.5);
+        const pz = (pr2 * 2 - 1) * (ARENA_HALF_D - 6.5);
+
+        // 중앙 여신상 공간과 남북 계단 입구는 비워둠
+        if (Math.hypot(px, pz) < 5.0) continue;
+        if (Math.abs(px) < 4.5 && Math.abs(pz) > ARENA_HALF_D - 7) continue;
+
+        const pillar = new THREE.Mesh(pGeo, wallMat);
+        pillar.position.set(px, 3.75, pz);
+        pillar.castShadow = true;
+        stageMapGroup.add(pillar);
+
+        const torchRing = new THREE.Mesh(
+            new THREE.TorusGeometry(1.05, 0.08, 6, 16),
+            new THREE.MeshBasicMaterial({ color: realm.accent })
+        );
+        torchRing.rotation.x = Math.PI / 2;
+        torchRing.position.set(px, 5.8, pz);
+        stageMapGroup.add(torchRing);
+    }
+
+    // 5) 중앙 여신의 석상 (피나 & 레아 석상: 마물 전멸 시 활성화)
+    statueGroup = new THREE.Group();
+    statueGroup.position.set(0, 0, 0);
+
+    const pedestal = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.6, 1.9, 0.7, 16),
+        new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.4, metalness: 0.2 })
+    );
+    pedestal.position.y = 0.35;
+    statueGroup.add(pedestal);
+
+    // 두 여신 실루엣
+    const goddessMat = new THREE.MeshStandardMaterial({
+        color: 0xf8fafc,
+        emissive: 0x38bdf8,
+        emissiveIntensity: 0.45,
+        roughness: 0.25
+    });
+    const goddessL = new THREE.Mesh(new THREE.ConeGeometry(0.45, 2.2, 12), goddessMat);
+    goddessL.position.set(-0.42, 1.75, 0);
+    const goddessR = new THREE.Mesh(new THREE.ConeGeometry(0.45, 2.2, 12), goddessMat);
+    goddessR.position.set(0.42, 1.75, 0);
+
+    const haloRing = new THREE.Mesh(
+        new THREE.TorusGeometry(1.85, 0.08, 8, 32),
+        new THREE.MeshBasicMaterial({ color: 0xfbbf24 })
+    );
+    haloRing.rotation.x = Math.PI / 2;
+    haloRing.position.y = 0.1;
+
+    statueGroup.add(goddessL, goddessR, haloRing);
+    statueGroup.visible = false;
+    stageMapGroup.add(statueGroup);
+
+    // 6) 북쪽 상층 계단문 (다음 층 포탈)
+    nextDoorGroup = new THREE.Group();
+    nextDoorGroup.position.set(0, 0, -ARENA_HALF_D + 0.8);
+
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0xd97706, metalness: 0.75, roughness: 0.25 });
+    const leftPost = new THREE.Mesh(new THREE.BoxGeometry(0.7, 5.2, 0.9), frameMat);
+    leftPost.position.set(-2.2, 2.6, 0);
+    const rightPost = new THREE.Mesh(new THREE.BoxGeometry(0.7, 5.2, 0.9), frameMat);
+    rightPost.position.set(2.2, 2.6, 0);
+    const topLintel = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.8, 1.0), frameMat);
+    topLintel.position.set(0, 5.4, 0);
+
+    nextDoorPortalMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(3.8, 4.9),
+        new THREE.MeshBasicMaterial({ color: 0xef4444, side: THREE.DoubleSide, transparent: true, opacity: 0.4 })
+    );
+    nextDoorPortalMesh.position.set(0, 2.5, 0.05);
+
+    nextDoorGroup.add(leftPost, rightPost, topLintel, nextDoorPortalMesh);
+    stageMapGroup.add(nextDoorGroup);
+
+    // 7) 남쪽 하층 계단문 (이전 층 귀환 포탈)
+    prevDoorGroup = new THREE.Group();
+    prevDoorGroup.position.set(0, 0, ARENA_HALF_D - 0.8);
+
+    const prevFrameMat = new THREE.MeshStandardMaterial({ color: 0x0284c7, metalness: 0.75, roughness: 0.25 });
+    const pLeft = new THREE.Mesh(new THREE.BoxGeometry(0.65, 4.8, 0.85), prevFrameMat);
+    pLeft.position.set(-2.0, 2.4, 0);
+    const pRight = new THREE.Mesh(new THREE.BoxGeometry(0.65, 4.8, 0.85), prevFrameMat);
+    pRight.position.set(2.0, 2.4, 0);
+    const pTop = new THREE.Mesh(new THREE.BoxGeometry(4.8, 0.7, 0.95), prevFrameMat);
+    pTop.position.set(0, 5.0, 0);
+
+    prevDoorPortalMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(3.4, 4.5),
+        new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, transparent: true, opacity: 0.65 })
+    );
+    prevDoorPortalMesh.position.set(0, 2.3, -0.05);
+
+    prevDoorGroup.add(pLeft, pRight, pTop, prevDoorPortalMesh);
+    prevDoorGroup.visible = (floorNum > 1);
+    stageMapGroup.add(prevDoorGroup);
+
+    updateDoorState(false);
+}
+
+function updateDoorState(isOpen) {
+    nextDoorOpen = isOpen;
+    statueActive = isOpen;
+
+    if (statueGroup) {
+        statueGroup.visible = isOpen;
+    }
+
+    if (nextDoorPortalMesh) {
+        if (isOpen) {
+            nextDoorPortalMesh.material.color.setHex(0xfbbf24);
+            nextDoorPortalMesh.material.opacity = 0.85;
+        } else {
+            nextDoorPortalMesh.material.color.setHex(0xef4444);
+            nextDoorPortalMesh.material.opacity = 0.35;
+        }
+    }
+
+    if (doorStatusBadge) {
+        if (isOpen) {
+            doorStatusBadge.textContent = '🚪 상층 계단 개방! (여신상 출현)';
+            doorStatusBadge.className = 'px-2 py-0.5 rounded bg-amber-950/90 border border-amber-400 text-[10px] font-black text-amber-300 animate-pulse';
+        } else {
+            doorStatusBadge.textContent = `🔒 마물 봉인 (${enemies.length}체)`;
+            doorStatusBadge.className = 'px-2 py-0.5 rounded bg-rose-950/90 border border-rose-500/60 text-[10px] font-bold text-rose-300';
+        }
+    }
+
+    if (guideNextDoor) {
+        guideNextDoor.textContent = isOpen
+            ? '🚪 북쪽 계단문: 개방됨! (진입 시 상층 이동)'
+            : `🔒 북쪽 계단문: 남은 마물 ${enemies.length}체 처치 시 개방`;
+        guideNextDoor.className = isOpen ? 'text-amber-300 font-black' : 'text-slate-400 font-bold';
+    }
+    if (guidePrevDoor) {
+        if (wave > 1) {
+            guidePrevDoor.classList.remove('hidden');
+            guidePrevDoor.textContent = `🌀 남쪽 계단문: ${wave - 1}층 귀환 (마물 리스폰)`;
+        } else {
+            guidePrevDoor.classList.add('hidden');
+        }
+    }
+    if (guideStatue) {
+        if (isOpen) guideStatue.classList.remove('hidden');
+        else guideStatue.classList.add('hidden');
+    }
+}
+
+// ==========================================
+// 3-2. 3D 몬스터 & 영역 수호 보스 빌더
+// ==========================================
+function createEnemy3DMesh(type) {
+    const group = new THREE.Group();
+    const hitMaterials = [];
+
+    if (type === 'slime') {
+        const mat = new THREE.MeshStandardMaterial({ color: 0x10b981, roughness: 0.25, transparent: true, opacity: 0.9 });
+        hitMaterials.push(mat);
+        const body = new THREE.Mesh(new THREE.SphereGeometry(0.75, 18, 14), mat);
+        body.position.y = 0.65;
+        body.scale.set(1.15, 0.85, 1.15);
+        body.castShadow = true;
+        group.add(body);
+
+        const eyeGeo = new THREE.SphereGeometry(0.11, 8, 8);
+        const eyeMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
+        const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+        eyeL.position.set(-0.24, 0.75, 0.68);
+        const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
+        eyeR.position.set(0.24, 0.75, 0.68);
+        group.add(eyeL, eyeR);
+
+    } else if (type === 'knight') {
+        const armorMat = new THREE.MeshStandardMaterial({ color: 0x4f46e5, metalness: 0.65, roughness: 0.3 });
+        hitMaterials.push(armorMat);
+
+        const legGeo = new THREE.CylinderGeometry(0.16, 0.14, 0.65, 8);
+        const legL = new THREE.Mesh(legGeo, armorMat);
+        legL.position.set(-0.26, 0.35, 0);
+        const legR = new THREE.Mesh(legGeo, armorMat);
+        legR.position.set(0.26, 0.35, 0);
+        group.add(legL, legR);
+        group.userData.legL = legL;
+        group.userData.legR = legR;
+
+        const torso = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.05, 0.68), armorMat);
+        torso.position.y = 1.15;
+        torso.castShadow = true;
+        group.add(torso);
+
+        const helm = new THREE.Mesh(new THREE.SphereGeometry(0.45, 14, 14), armorMat);
+        helm.position.y = 1.95;
+        group.add(helm);
+
+        const visor = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.12, 0.1), new THREE.MeshBasicMaterial({ color: 0xf43f5e }));
+        visor.position.set(0, 1.95, 0.42);
+        group.add(visor);
+
+        const armGeo = new THREE.CylinderGeometry(0.13, 0.12, 0.65, 8);
+        const armL = new THREE.Mesh(armGeo, armorMat);
+        armL.position.set(-0.62, 1.25, 0.15);
+        armL.rotation.x = -0.5;
+        const shield = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.05, 0.72), new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.7 }));
+        shield.position.set(-0.12, -0.2, 0.25);
+        armL.add(shield);
+
+        const armR = new THREE.Mesh(armGeo, armorMat);
+        armR.position.set(0.62, 1.25, 0.15);
+        armR.rotation.x = -0.6;
+        const spear = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 2.6, 8), new THREE.MeshStandardMaterial({ color: 0xe2e8f0, metalness: 0.8 }));
+        spear.position.set(0, -0.2, 0.55);
+        spear.rotation.x = Math.PI * 0.45;
+        armR.add(spear);
+
+        group.add(armL, armR);
+        group.userData.armR = armR;
+
+    } else if (type === 'mage') {
+        const robeMat = new THREE.MeshStandardMaterial({ color: 0xbe185d, roughness: 0.7 });
+        hitMaterials.push(robeMat);
+
+        const robe = new THREE.Mesh(new THREE.ConeGeometry(0.82, 1.85, 14), robeMat);
+        robe.position.y = 1.02;
+        robe.castShadow = true;
+        group.add(robe);
+
+        const hood = new THREE.Mesh(new THREE.SphereGeometry(0.4, 12, 12), new THREE.MeshStandardMaterial({ color: 0x1e1b4b }));
+        hood.position.y = 1.92;
+        group.add(hood);
+
+        const orb = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 12), new THREE.MeshBasicMaterial({ color: 0xf472b6 }));
+        orb.position.set(0.75, 1.75, 0.45);
+        group.add(orb);
+        group.userData.orb = orb;
+
+    } else if (type === 'midboss') {
+        const paladinMat = new THREE.MeshStandardMaterial({ color: 0xb91c1c, metalness: 0.75, roughness: 0.25 });
+        hitMaterials.push(paladinMat);
+
+        const legGeo = new THREE.CylinderGeometry(0.24, 0.2, 0.95, 10);
+        const legL = new THREE.Mesh(legGeo, paladinMat);
+        legL.position.set(-0.42, 0.5, 0);
+        const legR = new THREE.Mesh(legGeo, paladinMat);
+        legR.position.set(0.42, 0.5, 0);
+        group.add(legL, legR);
+        group.userData.legL = legL;
+        group.userData.legR = legR;
+
+        const torso = new THREE.Mesh(new THREE.BoxGeometry(1.55, 1.65, 1.05), paladinMat);
+        torso.position.y = 1.75;
+        torso.castShadow = true;
+        group.add(torso);
+
+        const helm = new THREE.Mesh(new THREE.SphereGeometry(0.62, 16, 16), paladinMat);
+        helm.position.y = 2.95;
+        group.add(helm);
+
+        const hornMat = new THREE.MeshStandardMaterial({ color: 0xfbbf24, metalness: 0.8 });
+        const hornL = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.9, 8), hornMat);
+        hornL.position.set(-0.5, 3.45, 0);
+        hornL.rotation.z = 0.45;
+        const hornR = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.9, 8), hornMat);
+        hornR.position.set(0.5, 3.45, 0);
+        hornR.rotation.z = -0.45;
+        group.add(hornL, hornR);
+
+        const armGeo = new THREE.CylinderGeometry(0.2, 0.18, 1.05, 8);
+        const armL = new THREE.Mesh(armGeo, paladinMat);
+        armL.position.set(-1.02, 1.9, 0.15);
+        armL.rotation.x = -0.4;
+        const armR = new THREE.Mesh(armGeo, paladinMat);
+        armR.position.set(1.02, 1.9, 0.15);
+        armR.rotation.x = -0.5;
+
+        const greatSword = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.1, 3.2), new THREE.MeshStandardMaterial({ color: 0xfef08a, emissive: 0xdc2626, emissiveIntensity: 0.5 }));
+        greatSword.position.set(0, -0.45, 1.15);
+        armR.add(greatSword);
+
+        group.add(armL, armR);
+        group.userData.armR = armR;
+
+    } else if (type === 'boss') {
+        const bossMat = new THREE.MeshStandardMaterial({ color: 0x7e22ce, metalness: 0.7, roughness: 0.25 });
+        hitMaterials.push(bossMat);
+
+        const legGeo = new THREE.CylinderGeometry(0.3, 0.24, 1.2, 10);
+        const legL = new THREE.Mesh(legGeo, bossMat);
+        legL.position.set(-0.55, 0.65, 0);
+        const legR = new THREE.Mesh(legGeo, bossMat);
+        legR.position.set(0.55, 0.65, 0);
+        group.add(legL, legR);
+        group.userData.legL = legL;
+        group.userData.legR = legR;
+
+        const torso = new THREE.Mesh(new THREE.BoxGeometry(2.1, 2.2, 1.4), bossMat);
+        torso.position.y = 2.2;
+        torso.castShadow = true;
+        group.add(torso);
+
+        const core = new THREE.Mesh(new THREE.SphereGeometry(0.48, 16, 16), new THREE.MeshBasicMaterial({ color: 0xf43f5e }));
+        core.position.set(0, 2.3, 0.74);
+        group.add(core);
+
+        const head = new THREE.Mesh(new THREE.SphereGeometry(0.76, 16, 16), new THREE.MeshStandardMaterial({ color: 0x4c1d95, metalness: 0.6 }));
+        head.position.y = 3.75;
+        group.add(head);
+
+        const hornMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.3 });
+        const hornL = new THREE.Mesh(new THREE.ConeGeometry(0.22, 1.4, 8), hornMat);
+        hornL.position.set(-0.68, 4.4, 0);
+        hornL.rotation.z = 0.55;
+        const hornR = new THREE.Mesh(new THREE.ConeGeometry(0.22, 1.4, 8), hornMat);
+        hornR.position.set(0.68, 4.4, 0);
+        hornR.rotation.z = -0.55;
+        group.add(hornL, hornR);
+
+        const wingMat = new THREE.MeshStandardMaterial({ color: 0x581c87, side: THREE.DoubleSide, roughness: 0.5 });
+        hitMaterials.push(wingMat);
+        const wingGeo = new THREE.BoxGeometry(2.8, 1.8, 0.12);
+        const leftWing = new THREE.Mesh(wingGeo, wingMat);
+        leftWing.position.set(-2.2, 2.6, -0.4);
+        const rightWing = new THREE.Mesh(wingGeo, wingMat);
+        rightWing.position.set(2.2, 2.6, -0.4);
+        group.add(leftWing, rightWing);
+        group.userData.leftWing = leftWing;
+        group.userData.rightWing = rightWing;
+    }
+
+    group.userData.hitMaterials = hitMaterials;
+    group.userData.origColors = hitMaterials.map(m => m.color.getHex());
+    scene.add(group);
+    return group;
+}
+
+// ==========================================
+// 4. 게임 상태, 마정석 연성(상점) & 레벨업 시스템
+// ==========================================
+let gameState = 'MENU';
+let prevGameState = 'PLAYING';
+let score = 0;
+let gold = 0; // 마정석(SP 포인트)
+let combo = 0;
+let comboTimer = 0;
+let screenShake = 0;
+let hitStopTimer = 0;
+let wave = 1;
+let bossSpawned = false;
+let doorTransitionCooldown = 0;
+
+const WEAPONS = [
+    { id: 'short', name: '초심자의 무구', atk: 16, reach: 3.7, color: 0xcbd5e1, hex: '#cbd5e1', slashColor: 0x38bdf8, price: 0, desc: '기본 연성 무구.' },
+    { id: 'broad', name: '루비의 무구 (Lv.2)', atk: 28, reach: 4.4, color: 0xf43f5e, hex: '#f43f5e', slashColor: 0xfb7185, price: 140, desc: '홍련의 기운이 깃든 무구. 공격력 대폭 상승.' },
+    { id: 'livart', name: '에메랄드의 무구 (Lv.3)', atk: 44, reach: 5.1, color: 0x34d399, hex: '#34d399', slashColor: 0x6ee7b7, price: 320, desc: '질풍의 에메라스 무구. 넓은 범위와 고화력.' },
+    { id: 'ericcil', name: '클레리아의 신기 (MAX)', atk: 68, reach: 5.9, color: 0xfbbf24, hex: '#fbbf24', slashColor: 0xfde047, price: 650, desc: '여신의 축복을 받은 최강의 클레리아 무구.' }
+];
+
+const ARMORS = [
+    { id: 'tunic', name: '여행자의 로브', def: 0, bonusHp: 0, color: 0xe2e8f0, hex: '#e2e8f0', price: 0, desc: '기본 방어구.' },
+    { id: 'chain', name: '실버 메일', def: 5, bonusHp: 45, color: 0x94a3b8, hex: '#94a3b8', price: 120, desc: '은빛 사슬 갑주. DEF +5 / 최대HP +45' },
+    { id: 'silver', name: '리플렉스 아머', def: 11, bonusHp: 100, color: 0x38bdf8, hex: '#38bdf8', price: 280, desc: '마력 반사 판금 갑주. DEF +11 / 최대HP +100' },
+    { id: 'cleria', name: '클레리아 성갑 (MAX)', def: 20, bonusHp: 200, color: 0xfbbf24, hex: '#fbbf24', price: 580, desc: '고대 클레리아 금속 갑주. DEF +20 / 최대HP +200' }
+];
+
+let ownedWeapons = ['short'];
+let ownedArmors = ['tunic'];
+let equippedWeapon = WEAPONS[0];
+let equippedArmor = ARMORS[0];
+let currentSkillIndex = 0;
+
+const keys = {};
+
+const player = {
+    x: 0,
+    y: 0,
+    z: 14,
+    vy: 0,
+    radius: 0.9,
+    speed: 14.5,
+    angle: Math.PI,
+    level: 1,
+    exp: 0,
+    nextExp: 100,
+    hp: 100,
+    maxHp: 100,
+    mp: 100, // SP 게이지
+    maxMp: 100,
+    burst: 0, // BOOST 게이지 (0~100)
+    boostTimer: 0, // 부스트 각성 남은 시간
+    atk: 16,
+    def: 0,
+    attackCooldown: 0,
+    comboStep: 0,
+    comboResetTimer: 0,
+    slashVisualTimer: 0,
+    whirlwindTimer: 0,
+    dashTimer: 0,
+    dashCooldown: 0,
+    dashDirX: 0,
+    dashDirZ: 0,
+    invulnTimer: 0
+};
+
+let enemies = [];
+let projectiles = [];
+let particles = [];
+let floatingTexts = [];
+let items = [];
+
+function recalcPlayerStats(healFull = false) {
+    const lvBonusHp = (player.level - 1) * 20;
+    const lvBonusMp = (player.level - 1) * 8;
+    const lvBonusAtk = (player.level - 1) * 4;
+    const lvBonusDef = Math.floor((player.level - 1) / 2);
+
+    player.maxHp = 100 + equippedArmor.bonusHp + lvBonusHp;
+    player.maxMp = 100 + lvBonusMp;
+    player.atk = currentHero.baseAtk + (equippedWeapon.atk - 16) + lvBonusAtk;
+    player.def = equippedArmor.def + lvBonusDef;
+    player.speed = currentHero.speed;
+
+    if (healFull) {
+        player.hp = player.maxHp;
+        player.mp = player.maxMp;
+    } else {
+        player.hp = Math.min(player.maxHp, player.hp);
+        player.mp = Math.min(player.maxMp, player.mp);
+    }
+}
+
+function gainExp(amount) {
+    player.exp += amount;
+    while (player.exp >= player.nextExp) {
+        player.exp -= player.nextExp;
+        player.level++;
+        player.nextExp = Math.round(100 * Math.pow(1.25, player.level - 1));
+        recalcPlayerStats(true);
+        playSound('levelup');
+        screenShake = 0.3;
+        addFloatingText(player.x, 2.5, player.z, `LEVEL UP! LV.${player.level}`, '#38bdf8');
+    }
+}
+
+function enterStageFloor(targetFloor, enteredFromSouth) {
+    wave = Math.max(1, Math.min(TOTAL_STAGES, targetFloor));
+    bossSpawned = false;
+    doorTransitionCooldown = 1.0;
+    playSound('portal');
+
+    enemies.forEach(e => scene.remove(e.mesh));
+    projectiles.forEach(p => scene.remove(p.mesh));
+    particles.forEach(pt => scene.remove(pt.mesh));
+    items.forEach(it => scene.remove(it.mesh));
+    floatingTexts.forEach(ft => ft.el.remove());
+
+    enemies = [];
+    projectiles = [];
+    particles = [];
+    items = [];
+    floatingTexts = [];
+
+    bossHud.classList.add('hidden');
+    bossHud.classList.remove('flex');
+
+    buildStageMap(wave);
+
+    if (enteredFromSouth) {
+        player.x = 0;
+        player.z = ARENA_HALF_D - 3.6;
+        player.angle = Math.PI;
+        cameraYaw = Math.PI;
+    } else {
+        player.x = 0;
+        player.z = -ARENA_HALF_D + 3.6;
+        player.angle = 0;
+        cameraYaw = 0;
+    }
+    player.y = 0;
+    player.vy = 0;
+    if (playerMesh) {
+        playerMesh.position.set(player.x, player.y, player.z);
+        playerMesh.rotation.y = player.angle;
+    }
+
+    spawnWaveEnemies(wave);
+    updateDoorState(enemies.length === 0);
+    updateHUD();
+
+    const realm = getRealmForFloor(wave);
+    addFloatingText(player.x, 2.4, player.z, `DARM TOWER ${wave}F · ${realm.name.split(' ')[0]}`, '#fbbf24');
+}
+
+function openHelpModal() { if (helpModal) helpModal.classList.remove('hidden'); }
+function closeHelpModal() { if (helpModal) helpModal.classList.add('hidden'); }
+if (helpToggleBtn) helpToggleBtn.addEventListener('click', openHelpModal);
+if (overlayHelpBtn) overlayHelpBtn.addEventListener('click', openHelpModal);
+if (closeHelpBtn) closeHelpBtn.addEventListener('click', closeHelpModal);
+
+function toggleShop() {
+    if (!shopModal) return;
+    if (gameState === 'PLAYING') {
+        prevGameState = gameState;
+        gameState = 'SHOP';
+        renderShop();
+        shopModal.classList.remove('hidden');
+    } else if (gameState === 'SHOP') {
+        gameState = prevGameState;
+        shopModal.classList.add('hidden');
+    }
+}
+if (shopToggleBtn) shopToggleBtn.addEventListener('click', toggleShop);
+if (closeShopBtn) closeShopBtn.addEventListener('click', toggleShop);
+
+function renderShop() {
+    if (!shopGoldText || !statAtkEl || !statDefEl || !statHpEl || !weaponListEl || !armorListEl) return;
+    shopGoldText.textContent = `${gold.toLocaleString()} SP`;
+    if (statLvEl) statLvEl.textContent = `LV.${player.level}`;
+    statAtkEl.textContent = player.atk;
+    statDefEl.textContent = player.def;
+    statHpEl.textContent = player.maxHp;
+
+    weaponListEl.innerHTML = '';
+    WEAPONS.forEach(w => {
+        const owned = ownedWeapons.includes(w.id);
+        const equipped = equippedWeapon.id === w.id;
+        const card = document.createElement('div');
+        card.className = `p-2.5 rounded-xl border ${equipped ? 'border-amber-400 bg-amber-950/30' : 'border-slate-700 bg-slate-800/70'} flex items-center justify-between gap-2`;
+        card.innerHTML = `
+            <div class="text-left">
+                <div class="text-xs sm:text-sm font-black text-white flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${w.hex}"></span>
+                    ${w.name}
+                </div>
+                <div class="text-[11px] text-slate-400">${w.desc}</div>
+            </div>
+            <button class="px-3 py-1.5 rounded-lg text-xs font-black shrink-0 ${
+                equipped ? 'bg-amber-500 text-slate-950' :
+                owned ? 'bg-slate-600 hover:bg-slate-500 text-white' :
+                gold >= w.price ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-700 text-slate-500 cursor-not-allowed'
+            }">
+                ${equipped ? '장착중' : owned ? '장착하기' : `${w.price} SP`}
+            </button>
+        `;
+        card.querySelector('button').addEventListener('click', () => {
+            if (equipped) return;
+            if (owned) {
+                equipWeapon(w);
+            } else if (gold >= w.price) {
+                gold -= w.price;
+                ownedWeapons.push(w.id);
+                playSound('pickup');
+                equipWeapon(w);
+            }
+            renderShop();
+            updateHUD();
+        });
+        weaponListEl.appendChild(card);
+    });
+
+    armorListEl.innerHTML = '';
+    ARMORS.forEach(a => {
+        const owned = ownedArmors.includes(a.id);
+        const equipped = equippedArmor.id === a.id;
+        const card = document.createElement('div');
+        card.className = `p-2.5 rounded-xl border ${equipped ? 'border-sky-400 bg-sky-950/30' : 'border-slate-700 bg-slate-800/70'} flex items-center justify-between gap-2`;
+        card.innerHTML = `
+            <div class="text-left">
+                <div class="text-xs sm:text-sm font-black text-white flex items-center gap-1.5">
+                    <span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${a.hex}"></span>
+                    ${a.name}
+                </div>
+                <div class="text-[11px] text-slate-400">${a.desc}</div>
+            </div>
+            <button class="px-3 py-1.5 rounded-lg text-xs font-black shrink-0 ${
+                equipped ? 'bg-sky-400 text-slate-950' :
+                owned ? 'bg-slate-600 hover:bg-slate-500 text-white' :
+                gold >= a.price ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-700 text-slate-500 cursor-not-allowed'
+            }">
+                ${equipped ? '장착중' : owned ? '장착하기' : `${a.price} SP`}
+            </button>
+        `;
+        card.querySelector('button').addEventListener('click', () => {
+            if (equipped) return;
+            if (owned) {
+                equipArmor(a);
+            } else if (gold >= a.price) {
+                gold -= a.price;
+                ownedArmors.push(a.id);
+                playSound('pickup');
+                equipArmor(a);
+            }
+            renderShop();
+            updateHUD();
+        });
+        armorListEl.appendChild(card);
+    });
+}
+
+function equipWeapon(w) {
+    equippedWeapon = w;
+    recalcPlayerStats(false);
+    if (swordBladeMesh) {
+        swordBladeMesh.material.color.setHex(w.color);
+        swordBladeMesh.material.emissive.setHex(w.slashColor);
+    }
+}
+
+function equipArmor(a) {
+    const prevBonus = equippedArmor.bonusHp;
+    equippedArmor = a;
+    recalcPlayerStats(false);
+    player.hp = Math.min(player.maxHp, player.hp + Math.max(0, a.bonusHp - prevBonus));
+}
+
+function toggleCameraMode() {
+    cameraMode = (cameraMode === 'QUARTER') ? 'THIRD' : 'QUARTER';
+    if (viewToggleBtn) {
+        viewToggleBtn.textContent = cameraMode === 'QUARTER' ? '🎥 쿼터뷰 (V)' : '🎥 3인칭 (V)';
+    }
+    addFloatingText(player.x, 2.5, player.z, cameraMode === 'QUARTER' ? '이스 오리진 쿼터뷰' : '3인칭 백뷰 시점', '#93c5fd');
+}
+if (viewToggleBtn) viewToggleBtn.addEventListener('click', toggleCameraMode);
+
+function switchSkill() {
+    const skList = currentHero.skills;
+    currentSkillIndex = (currentSkillIndex + 1) % skList.length;
+    const sk = skList[currentSkillIndex];
+    skillBtnName.textContent = sk.name;
+    skillBtnCost.textContent = `SP ${sk.cost}`;
+    const btnSkill = document.getElementById('btn-skill');
+    btnSkill.classList.remove('btn-amber', 'btn-emerald', 'btn-blue');
+    btnSkill.classList.add(sk.btnClass);
+    addFloatingText(player.x, 2.2, player.z, `정령 전환: ${sk.name}`, '#e2e8f0');
+}
+
+// ==========================================
+// 5. 입력 이벤트 & 마우스/터치 시점 제어
+// ==========================================
+window.addEventListener('keydown', (e) => {
+    keys[e.code] = true;
+
+    if (e.code === 'KeyB' || (e.code === 'Escape' && gameState === 'SHOP')) {
+        if (gameState === 'PLAYING' || gameState === 'SHOP') toggleShop();
+        return;
+    }
+
+    if (e.code === 'KeyV') {
+        if (gameState === 'PLAYING') toggleCameraMode();
+        return;
+    }
+
+    if (gameState !== 'PLAYING') return;
+
+    if (e.code === 'KeyZ' || e.code === 'KeyJ') triggerAttack();
+    if (e.code === 'KeyX' || e.code === 'KeyK') triggerJump();
+    if (e.code === 'KeyC' || e.code === 'KeyL') triggerSkill();
+    if (e.code === 'KeyQ') switchSkill();
+    if (e.code === 'KeyR' || e.code === 'KeyF') triggerBoostOrEx();
+    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight' || e.code === 'Space') {
+        e.preventDefault();
+        triggerDash();
+    }
+});
+
+window.addEventListener('keyup', (e) => {
+    keys[e.code] = false;
+});
+
+let isDraggingCam = false;
+let dragStartX = 0;
+let dragMoved = false;
+
+threeContainer.addEventListener('mousedown', (e) => {
+    isDraggingCam = true;
+    dragStartX = e.clientX;
+    dragMoved = false;
+});
+window.addEventListener('mousemove', (e) => {
+    if (!isDraggingCam || gameState !== 'PLAYING') return;
+    const dx = e.clientX - dragStartX;
+    if (Math.abs(dx) > 3) dragMoved = true;
+    cameraYaw = normalizeAngle(cameraYaw - dx * 0.006);
+    dragStartX = e.clientX;
+});
+window.addEventListener('mouseup', () => {
+    if (isDraggingCam && !dragMoved && gameState === 'PLAYING') {
+        triggerAttack();
+    }
+    isDraggingCam = false;
+});
+
+let touchStartX = null;
+threeContainer.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 1) touchStartX = e.touches[0].clientX;
+}, { passive: true });
+threeContainer.addEventListener('touchmove', (e) => {
+    if (touchStartX !== null && e.touches.length === 1 && gameState === 'PLAYING') {
+        const dx = e.touches[0].clientX - touchStartX;
+        cameraYaw = normalizeAngle(cameraYaw - dx * 0.0075);
+        touchStartX = e.touches[0].clientX;
+    }
+}, { passive: true });
+threeContainer.addEventListener('touchend', () => {
+    touchStartX = null;
+});
+
+document.querySelectorAll('[data-action]').forEach(btn => {
+    const action = btn.getAttribute('data-action');
+    const handleAction = (e) => {
+        e.preventDefault();
+        btn.classList.add('pressed');
+        setTimeout(() => btn.classList.remove('pressed'), 120);
+        if (gameState !== 'PLAYING') return;
+        if (action === 'attack') triggerAttack();
+        if (action === 'jump') triggerJump();
+        if (action === 'skill') triggerSkill();
+        if (action === 'switchSkill') switchSkill();
+        if (action === 'ultimate') triggerBoostOrEx();
+        if (action === 'dash') triggerDash();
+    };
+    btn.addEventListener('touchstart', handleAction, { passive: false });
+    btn.addEventListener('mousedown', handleAction);
+});
+
+// ==========================================
+// 6. 주인공별 고유 전투 액션 & 부스트/EX 스페셜
+// ==========================================
+function findNearestEnemyAngle() {
+    let bestDist = 11.0;
+    let bestAng = null;
+    for (const e of enemies) {
+        const d = Math.hypot(e.x - player.x, e.z - player.z);
+        if (d < bestDist) {
+            bestDist = d;
+            bestAng = Math.atan2(e.x - player.x, e.z - player.z);
+        }
+    }
+    return bestAng;
+}
+
+function triggerAttack() {
+    if (player.attackCooldown > 0) return;
+
+    // 가까운 적이 사거리 내에 있으면 살짝 자동 조준 보정
+    const autoAng = findNearestEnemyAngle();
+    if (autoAng !== null) player.angle = autoAng;
+
+    const speedMult = player.boostTimer > 0 ? 0.62 : 1.0;
+
+    // 휴고 팩트: 원거리 팩트 아이 마탄 연사!
+    if (currentHero.attackStyle === 'ranged') {
+        player.attackCooldown = 0.14 * speedMult;
+        player.slashVisualTimer = 0.12;
+        playSound('magic');
+
+        const shotDmg = Math.round(player.atk * (player.boostTimer > 0 ? 1.25 : 1.0));
+        const perpX = Math.cos(player.angle) * 0.75;
+        const perpZ = -Math.sin(player.angle) * 0.75;
+        const vx = Math.sin(player.angle) * 34;
+        const vz = Math.cos(player.angle) * 34;
+
+        spawnProjectile3D(true, player.x + perpX, 1.35, player.z + perpZ, vx, vz, 0.35, shotDmg, 0.75, 0x38bdf8);
+        spawnProjectile3D(true, player.x - perpX, 1.35, player.z - perpZ, vx, vz, 0.35, shotDmg, 0.75, 0x38bdf8);
+        return;
+    }
+
+    // 유니카 토바 & 토르 팩트: 근접 3단 콤보 (토르는 공격 속도가 훨씬 빠름)
+    player.comboStep = (player.comboStep % 3) + 1;
+    player.comboResetTimer = 0.65;
+    player.slashVisualTimer = 0.16;
+
+    const styleSpeed = currentHero.attackStyle === 'claw' ? 0.75 : 1.0;
+    player.attackCooldown = (player.comboStep === 3 ? 0.24 : 0.14) * speedMult * styleSpeed;
+
+    const stepDist = player.comboStep === 3 ? 0.85 : 0.45;
+    player.x = Math.max(-ARENA_HALF_W + 1.2, Math.min(ARENA_HALF_W - 1.2, player.x + Math.sin(player.angle) * stepDist));
+    player.z = Math.max(-ARENA_HALF_D + 1.2, Math.min(ARENA_HALF_D - 1.2, player.z + Math.cos(player.angle) * stepDist));
+
+    playSound(`slash${player.comboStep}`);
+
+    if (slashArcMesh) {
+        slashArcMesh.visible = true;
+        const defaultSlash = currentHero.id === 'toal' ? 0xc084fc : equippedWeapon.slashColor;
+        slashArcMesh.material.color.setHex(player.comboStep === 3 ? 0xf59e0b : defaultSlash);
+        const sc = player.comboStep === 3 ? 1.45 : 1.05;
+        slashArcMesh.scale.set(sc, sc, 1);
+    }
+
+    const reach = (player.comboStep === 3 ? equippedWeapon.reach + 1.2 : equippedWeapon.reach) * (currentHero.id === 'toal' ? 0.92 : 1.0);
+    const baseAtk = player.atk * (player.boostTimer > 0 ? 1.25 : 1.0);
+    const damage = player.comboStep === 3 ? Math.round(baseAtk * 2.15) : (player.comboStep === 2 ? Math.round(baseAtk * 1.35) : Math.round(baseAtk));
+    let hitAny = false;
+
+    for (const enemy of enemies) {
+        const dx = enemy.x - player.x;
+        const dz = enemy.z - player.z;
+        const dist = Math.hypot(dx, dz);
+
+        if (dist <= reach + enemy.radius) {
+            const angleToEnemy = Math.atan2(dx, dz);
+            const angleDiff = Math.abs(normalizeAngle(angleToEnemy - player.angle));
+            if (player.comboStep === 3 || angleDiff <= Math.PI * 0.55) {
+                damageEnemy(enemy, damage, player.angle, player.comboStep === 3 ? 11 : 5.5);
+                hitAny = true;
+            }
+        }
+    }
+
+    if (hitAny) {
+        player.mp = Math.min(player.maxMp, player.mp + 7);
+        if (player.boostTimer <= 0) {
+            player.burst = Math.min(100, player.burst + (player.comboStep === 3 ? 15 : 9));
+        }
+        hitStopTimer = player.comboStep === 3 ? 0.038 : 0.016;
+    }
+}
+
+function triggerJump() {
+    if (player.y === 0) {
+        player.vy = 16.5;
+        playSound('jump');
+    }
+}
+
+function triggerDash() {
+    if (player.dashCooldown > 0 || player.dashTimer > 0) return;
+    player.dashTimer = 0.18;
+    player.dashCooldown = 0.52;
+    player.invulnTimer = 0.28;
+    player.dashDirX = Math.sin(player.angle);
+    player.dashDirZ = Math.cos(player.angle);
+    playSound('dash');
+}
+
+function triggerSkill() {
+    const sk = currentHero.skills[currentSkillIndex];
+    if (player.mp < sk.cost) {
+        addFloatingText(player.x, 2.1, player.z, 'SP 부족!', '#94a3b8');
+        return;
+    }
+    player.mp -= sk.cost;
+    if (player.boostTimer <= 0) {
+        player.burst = Math.min(100, player.burst + 14);
+    }
+    playSound('skill');
+    screenShake = 0.35;
+
+    if (sk.id === 'fire') {
+        const spread = currentHero.id === 'hugo' ? [-0.24, -0.12, 0, 0.12, 0.24] : [-0.16, 0, 0.16];
+        const skillDmg = Math.round(player.atk * (currentHero.id === 'hugo' ? 1.45 : 1.9));
+        const col = currentHero.id === 'toal' ? 0xa855f7 : 0xf97316;
+        spread.forEach(offset => {
+            const a = player.angle + offset;
+            spawnProjectile3D(true, player.x + Math.sin(a) * 1.2, 1.3, player.z + Math.cos(a) * 1.2, Math.sin(a) * 30, Math.cos(a) * 30, 0.65, skillDmg, 0.85, col);
+        });
+    } else if (sk.id === 'wind') {
+        if (currentHero.id === 'hugo') {
+            // 휴고 결계 배리어
+            player.invulnTimer = 2.6;
+            player.hp = Math.min(player.maxHp, player.hp + 35);
+            addFloatingText(player.x, 2.3, player.z, '결계 배리어! HP+35', '#38bdf8');
+        } else {
+            // 유니카 선풍의 도끼 / 토르 질풍난무
+            player.whirlwindTimer = 0.45;
+            const windDmg = Math.round(player.atk * 2.25);
+            spawnParticles3D(player.x, 1.2, player.z, 0x4ade80, 24, 12);
+            addFloatingText(player.x, 2.3, player.z, `${sk.name}!`, '#4ade80');
+
+            for (let i = projectiles.length - 1; i >= 0; i--) {
+                if (!projectiles[i].fromPlayer && Math.hypot(projectiles[i].x - player.x, projectiles[i].z - player.z) < 9.5) {
+                    spawnParticles3D(projectiles[i].x, 1.0, projectiles[i].z, 0x86efac, 5, 4);
+                    scene.remove(projectiles[i].mesh);
+                    projectiles.splice(i, 1);
+                }
+            }
+            for (const enemy of enemies) {
+                const dx = enemy.x - player.x;
+                const dz = enemy.z - player.z;
+                if (Math.hypot(dx, dz) < 8.5 + enemy.radius) {
+                    damageEnemy(enemy, windDmg, Math.atan2(dx, dz), 16);
+                }
+            }
+        }
+    } else if (sk.id === 'thunder') {
+        player.invulnTimer = 2.4;
+        player.hp = Math.min(player.maxHp, player.hp + 30);
+        const thunderDmg = Math.round(player.atk * 2.1);
+        spawnParticles3D(player.x, 1.3, player.z, 0xfbbf24, 22, 13);
+        addFloatingText(player.x, 2.3, player.z, `${sk.name}!`, '#fde047');
+
+        for (const enemy of enemies) {
+            const dx = enemy.x - player.x;
+            const dz = enemy.z - player.z;
+            if (Math.hypot(dx, dz) < 7.5 + enemy.radius) {
+                damageEnemy(enemy, thunderDmg, Math.atan2(dx, dz), 14);
+            }
+        }
+    }
+}
+
+// <이스 오리진> 2단계 부스트(BOOST) & EX 스페셜 아츠!
+function triggerBoostOrEx() {
+    // 1단계: 게이지가 100%이고 아직 부스트 중이 아닐 때 -> BOOST 각성 발동!
+    if (player.burst >= 100 && player.boostTimer <= 0) {
+        player.boostTimer = 7.0;
+        player.invulnTimer = 1.5;
+        player.mp = player.maxMp;
+        screenShake = 0.55;
+        playSound('levelup');
+        spawnParticles3D(player.x, 1.2, player.z, 0xfbbf24, 28, 14);
+        addFloatingText(player.x, 2.6, player.z, 'BOOST 각성! (한번 더 누르면 EX 필살기)', '#fbbf24');
+        return;
+    }
+
+    // 2단계: BOOST 각성 중에 다시 한 번 누르면 -> 초필살기 EX 스페셜 발동!
+    if (player.boostTimer > 0) {
+        player.boostTimer = 0;
+        player.burst = 0;
+        player.invulnTimer = 2.2;
+        screenShake = 0.9;
+        hitStopTimer = 0.05;
+        playSound('ultimate');
+
+        addFloatingText(player.x, 2.7, player.z, currentHero.exName, '#f0abfc');
+
+        for (let i = projectiles.length - 1; i >= 0; i--) {
+            if (!projectiles[i].fromPlayer) {
+                scene.remove(projectiles[i].mesh);
+                projectiles.splice(i, 1);
+            }
+        }
+
+        const ultProjDmg = Math.round(player.atk * 2.6);
+        const projCol = currentHero.id === 'hugo' ? 0x38bdf8 : (currentHero.id === 'toal' ? 0xc084fc : 0xf97316);
+        for (let i = 0; i < 16; i++) {
+            const a = (Math.PI * 2 / 16) * i;
+            spawnProjectile3D(true, player.x + Math.sin(a) * 1.4, 1.2, player.z + Math.cos(a) * 1.4, Math.sin(a) * 34, Math.cos(a) * 34, 0.85, ultProjDmg, 0.9, projCol);
+        }
+
+        const screenSlashDmg = Math.round(player.atk * 4.8);
+        for (const enemy of enemies) {
+            const ang = Math.atan2(enemy.x - player.x, enemy.z - player.z);
+            damageEnemy(enemy, screenSlashDmg, ang, 18);
+        }
+        return;
+    }
+
+    addFloatingText(player.x, 2.2, player.z, 'BOOST 게이지 부족!', '#f59e0b');
+}
+
+function spawnProjectile3D(fromPlayer, x, y, z, vx, vz, radius, damage, life, colorHex) {
+    const geo = new THREE.SphereGeometry(radius, 12, 12);
+    const mat = new THREE.MeshBasicMaterial({ color: colorHex });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, y, z);
+    scene.add(mesh);
+
+    projectiles.push({ fromPlayer, x, y, z, vx, vz, radius, damage, life, colorHex, mesh });
+}
+
+// ==========================================
+// 7. 다암의 탑 30층 몬스터 및 6대 영역 수호 보스 스폰
+// ==========================================
+function getFloorScaling(floor) {
+    const progress = (floor - 1) / (TOTAL_STAGES - 1);
+    return {
+        hpMult: 1 + (floor - 1) * 0.25 + Math.pow(progress, 2.0) * 12.0,
+        dmgMult: 1 + (floor - 1) * 0.16 + Math.pow(progress, 1.8) * 6.0,
+        spdMult: Math.min(1.8, 1 + progress * 0.65),
+        expMult: 1 + (floor - 1) * 0.28,
+        goldMult: 1 + (floor - 1) * 0.18
+    };
+}
+
+function spawnEnemy(type) {
+    let ex, ez;
+    do {
+        ex = (Math.random() * 2 - 1) * (ARENA_HALF_W - 3.0);
+        ez = (Math.random() * 2 - 1) * (ARENA_HALF_D - 4.0);
+    } while (Math.hypot(ex - player.x, ez - player.z) < 8.5);
+
+    const mesh = createEnemy3DMesh(type);
+    mesh.position.set(ex, 0, ez);
+
+    const sc = getFloorScaling(wave);
+
+    if (type === 'slime') {
+        enemies.push({
+            type: 'slime', x: ex, z: ez, radius: 0.85,
+            hp: Math.round(45 * sc.hpMult), maxHp: Math.round(45 * sc.hpMult),
+            speed: 5.5 * sc.spdMult, damage: Math.round(10 * sc.dmgMult),
+            expReward: Math.round(28 * sc.expMult), goldReward: Math.round(14 * sc.goldMult),
+            colorHex: 0x10b981, aiTimer: Math.random() * 2, knockX: 0, knockZ: 0, flashTimer: 0, mesh
+        });
+    } else if (type === 'knight') {
+        enemies.push({
+            type: 'knight', x: ex, z: ez, radius: 1.0,
+            hp: Math.round(85 * sc.hpMult), maxHp: Math.round(85 * sc.hpMult),
+            speed: 4.8 * sc.spdMult, damage: Math.round(16 * sc.dmgMult),
+            expReward: Math.round(52 * sc.expMult), goldReward: Math.round(24 * sc.goldMult),
+            colorHex: 0x6366f1, aiTimer: 1 + Math.random(), knockX: 0, knockZ: 0, flashTimer: 0, mesh
+        });
+    } else if (type === 'mage') {
+        enemies.push({
+            type: 'mage', x: ex, z: ez, radius: 0.9,
+            hp: Math.round(62 * sc.hpMult), maxHp: Math.round(62 * sc.hpMult),
+            speed: 3.9 * sc.spdMult, damage: Math.round(14 * sc.dmgMult),
+            expReward: Math.round(45 * sc.expMult), goldReward: Math.round(20 * sc.goldMult),
+            colorHex: 0xec4899, aiTimer: 1.5, knockX: 0, knockZ: 0, flashTimer: 0, mesh
+        });
+    }
+}
+
+function spawnAreaBoss(floor) {
+    const realm = getRealmForFloor(floor);
+    const isFinal = (floor === TOTAL_STAGES);
+
+    bossHud.classList.remove('hidden');
+    bossHud.classList.add('flex');
+    if (bossNameLabel) bossNameLabel.textContent = `${floor}F GUARDIAN · ${realm.bossName}`;
+    bossHpBar.style.width = '100%';
+
+    const mesh = createEnemy3DMesh(isFinal ? 'boss' : 'midboss');
+    mesh.position.set(0, 0, -ARENA_HALF_D + 7.5);
+
+    const sc = getFloorScaling(floor);
+    const maxHp = Math.round((isFinal ? 680 : 420) * sc.hpMult);
+    const dmg = Math.round((isFinal ? 26 : 20) * sc.dmgMult);
+
+    enemies.push({
+        type: isFinal ? 'boss' : 'midboss',
+        name: realm.bossName,
+        x: 0, z: -ARENA_HALF_D + 7.5, radius: isFinal ? 2.0 : 1.5,
+        hp: maxHp, maxHp: maxHp,
+        speed: (isFinal ? 8.2 : 6.0) * sc.spdMult,
+        damage: dmg,
+        expReward: Math.round(320 * sc.expMult),
+        goldReward: Math.round(140 * sc.goldMult),
+        colorHex: isFinal ? 0xa855f7 : 0xdc2626,
+        aiTimer: 1.2, pattern: 0, knockX: 0, knockZ: 0, flashTimer: 0, mesh
+    });
+}
+
+function spawnWaveEnemies(w) {
+    if (w % 5 === 0 && !bossSpawned) {
+        bossSpawned = true;
+        spawnAreaBoss(w);
+        if (w < TOTAL_STAGES) {
+            spawnEnemy('knight');
+            spawnEnemy('mage');
+        }
+        return;
+    }
+
+    const totalCount = Math.min(9, 4 + Math.floor(w / 5));
+    const mageRatio = Math.min(0.45, 0.15 + w * 0.01);
+    const knightRatio = Math.min(0.5, 0.25 + w * 0.008);
+
+    for (let i = 0; i < totalCount; i++) {
+        const r = Math.random();
+        if (r < mageRatio) spawnEnemy('mage');
+        else if (r < mageRatio + knightRatio) spawnEnemy('knight');
+        else spawnEnemy('slime');
+    }
+}
+
+// ==========================================
+// 8. 대미지, 경험치/레벨업, 마정석 드롭
+// ==========================================
+function damageEnemy(enemy, amount, hitAngle, knockForce) {
+    enemy.hp -= amount;
+    enemy.flashTimer = 0.1;
+    if (enemy.type !== 'boss' && enemy.type !== 'midboss') {
+        enemy.knockX = Math.sin(hitAngle) * knockForce;
+        enemy.knockZ = Math.cos(hitAngle) * knockForce;
+    }
+
+    combo++;
+    comboTimer = 2.5;
+    score += amount * (1 + Math.floor(combo / 5));
+
+    playSound('hit');
+    screenShake = (enemy.type === 'boss' || enemy.type === 'midboss') ? 0.25 : 0.14;
+    spawnParticles3D(enemy.x, 1.0, enemy.z, 0xfbbf24, 7, 7);
+    addFloatingText(enemy.x, 2.2, enemy.z, `-${amount}`, '#fde047');
+
+    // 휴고 팩트 원거리 마탄 적중 시에도 부스트 게이지 충전
+    if (currentHero.attackStyle === 'ranged' && player.boostTimer <= 0) {
+        player.burst = Math.min(100, player.burst + 4);
+    }
+
+    if (enemy.type === 'boss' || enemy.type === 'midboss') {
+        const pct = Math.max(0, (enemy.hp / enemy.maxHp) * 100);
+        bossHpBar.style.width = `${pct}%`;
+    }
+
+    if (enemy.hp <= 0) {
+        spawnParticles3D(enemy.x, 1.0, enemy.z, enemy.colorHex, 18, 9);
+
+        gold += enemy.goldReward;
+        addFloatingText(enemy.x, 1.7, enemy.z, `+${enemy.goldReward} SP / +${enemy.expReward} EXP`, '#fbbf24');
+        gainExp(enemy.expReward);
+
+        if (enemy.type !== 'boss' && enemy.type !== 'midboss' && Math.random() < 0.35) {
+            const itType = Math.random() < 0.6 ? 'hp' : 'mp';
+            const itMesh = new THREE.Mesh(
+                new THREE.OctahedronGeometry(0.45, 0),
+                new THREE.MeshBasicMaterial({ color: itType === 'hp' ? 0x22c55e : 0xf59e0b })
+            );
+            itMesh.position.set(enemy.x, 0.7, enemy.z);
+            scene.add(itMesh);
+            items.push({ x: enemy.x, z: enemy.z, type: itType, bob: 0, mesh: itMesh });
+        }
+
+        if (enemy.type === 'midboss') {
+            bossHud.classList.add('hidden');
+            bossHud.classList.remove('flex');
+        } else if (enemy.type === 'boss') {
+            bossHud.classList.add('hidden');
+            bossHud.classList.remove('flex');
+            setTimeout(() => endGame(true), 600);
+        }
+    }
+}
+
+function damagePlayer(amount) {
+    if (player.invulnTimer > 0 || gameState !== 'PLAYING') return;
+    const mitigated = Math.max(1, amount - player.def);
+    player.hp = Math.max(0, player.hp - mitigated);
+    player.invulnTimer = 0.85;
+    combo = 0;
+    screenShake = 0.45;
+    playSound('hurt');
+    addFloatingText(player.x, 1.9, player.z, `피격 -${mitigated}`, '#f87171');
+
+    if (player.hp <= 0) {
+        endGame(false);
+    }
+}
+
+function spawnParticles3D(x, y, z, colorHex, count, speed) {
+    const geo = new THREE.BoxGeometry(0.22, 0.22, 0.22);
+    const mat = new THREE.MeshBasicMaterial({ color: colorHex });
+    for (let i = 0; i < count; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = (Math.random() - 0.3) * Math.PI;
+        const s = (0.3 + Math.random() * 0.7) * speed;
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(x, y, z);
+        scene.add(mesh);
+
+        particles.push({
+            x, y, z,
+            vx: Math.cos(theta) * Math.cos(phi) * s,
+            vy: Math.abs(Math.sin(phi)) * s + 2,
+            vz: Math.sin(theta) * Math.cos(phi) * s,
+            life: 0.3 + Math.random() * 0.25,
+            mesh
+        });
+    }
+}
+
+function addFloatingText(wx, wy, wz, text, color) {
+    const el = document.createElement('div');
+    el.className = 'floating-dmg';
+    el.textContent = text;
+    el.style.color = color;
+    floatingLayer.appendChild(el);
+    floatingTexts.push({ wx, wy, wz, el, life: 0.85 });
+}
+
+function normalizeAngle(a) {
+    while (a > Math.PI) a -= Math.PI * 2;
+    while (a < -Math.PI) a += Math.PI * 2;
+    return a;
+}
+
+// ==========================================
+// 9. 메인 3D 업데이트 루프
+// ==========================================
+function update(dt) {
+    if (gameState !== 'PLAYING') return;
+
+    if (hitStopTimer > 0) {
+        hitStopTimer -= dt;
+        return;
+    }
+
+    const nowTime = performance.now() * 0.001;
+
+    if (doorTransitionCooldown > 0) doorTransitionCooldown -= dt;
+    if (statueHealCooldown > 0) statueHealCooldown -= dt;
+    if (player.attackCooldown > 0) player.attackCooldown -= dt;
+    if (player.slashVisualTimer > 0) {
+        player.slashVisualTimer -= dt;
+        if (player.slashVisualTimer <= 0 && slashArcMesh) slashArcMesh.visible = false;
+    }
+    if (player.whirlwindTimer > 0) player.whirlwindTimer -= dt;
+    if (player.dashCooldown > 0) player.dashCooldown -= dt;
+    if (player.invulnTimer > 0) player.invulnTimer -= dt;
+    if (player.boostTimer > 0) {
+        player.boostTimer -= dt;
+        player.burst = Math.max(0, (player.boostTimer / 7.0) * 100);
+    }
+    if (screenShake > 0) screenShake = Math.max(0, screenShake - dt * 2.2);
+
+    if (player.comboResetTimer > 0) {
+        player.comboResetTimer -= dt;
+        if (player.comboResetTimer <= 0) player.comboStep = 0;
+    }
+
+    if (comboTimer > 0) {
+        comboTimer -= dt;
+        if (comboTimer <= 0) combo = 0;
+    }
+
+    // 원작처럼 SP 게이지는 빠르게 자동 회복됨
+    player.mp = Math.min(player.maxMp, player.mp + dt * 9.5);
+
+    // 이동 처리
+    const moveMult = player.boostTimer > 0 ? 1.32 : 1.0;
+    let isMoving = false;
+
+    if (player.dashTimer > 0) {
+        player.dashTimer -= dt;
+        player.x += player.dashDirX * (player.speed * 2.6) * dt;
+        player.z += player.dashDirZ * (player.speed * 2.6) * dt;
+        isMoving = true;
+    } else {
+        let forwardInput = 0;
+        let strafeInput = 0;
+        if (keys['ArrowUp'] || keys['KeyW']) forwardInput += 1;
+        if (keys['ArrowDown'] || keys['KeyS']) forwardInput -= 1;
+        if (keys['ArrowLeft'] || keys['KeyA']) strafeInput += 1;
+        if (keys['ArrowRight'] || keys['KeyD']) strafeInput -= 1;
+
+        if (forwardInput !== 0 || strafeInput !== 0) {
+            isMoving = true;
+            const fwdX = Math.sin(cameraYaw);
+            const fwdZ = Math.cos(cameraYaw);
+            const rightX = Math.sin(cameraYaw + Math.PI / 2);
+            const rightZ = Math.cos(cameraYaw + Math.PI / 2);
+
+            let moveX = fwdX * forwardInput + rightX * strafeInput;
+            let moveZ = fwdZ * forwardInput + rightZ * strafeInput;
+            const len = Math.hypot(moveX, moveZ) || 1;
+            moveX /= len;
+            moveZ /= len;
+
+            player.x += moveX * player.speed * moveMult * dt;
+            player.z += moveZ * player.speed * moveMult * dt;
+            player.angle = Math.atan2(moveX, moveZ);
+        }
+    }
+
+    // 점프 물리
+    if (player.y > 0 || player.vy !== 0) {
+        player.y += player.vy * dt;
+        player.vy -= 44 * dt;
+        if (player.y <= 0) {
+            player.y = 0;
+            player.vy = 0;
+        }
+    }
+
+    player.x = Math.max(-ARENA_HALF_W + 1.1, Math.min(ARENA_HALF_W - 1.1, player.x));
+    player.z = Math.max(-ARENA_HALF_D + 1.1, Math.min(ARENA_HALF_D - 1.1, player.z));
+
+    // 3D 캐릭터 애니메이션 업데이트
+    if (playerMesh) {
+        playerMesh.position.set(player.x, player.y, player.z);
+        playerMesh.rotation.y = player.angle;
+
+        const walkCycle = isMoving && player.y === 0 ? Math.sin(nowTime * 16) : 0;
+        if (playerMesh.userData.legL && playerMesh.userData.legR) {
+            playerMesh.userData.legL.rotation.x = walkCycle * 0.65;
+            playerMesh.userData.legR.rotation.x = -walkCycle * 0.65;
+        }
+        if (playerMesh.userData.armL) {
+            playerMesh.userData.armL.rotation.x = -walkCycle * 0.55;
+        }
+        if (playerMesh.userData.cape) {
+            playerMesh.userData.cape.rotation.x = 0.16 + (isMoving ? 0.25 + Math.sin(nowTime * 14) * 0.08 : 0.04);
+        }
+        if (playerMesh.userData.armR) {
+            if (player.slashVisualTimer > 0) {
+                const swingProgress = 1 - (player.slashVisualTimer / 0.16);
+                playerMesh.userData.armR.rotation.x = -1.3 + swingProgress * 1.6;
+                playerMesh.userData.armR.rotation.y = (player.comboStep % 2 === 0 ? -1 : 1) * (0.9 - swingProgress * 1.8);
+            } else {
+                playerMesh.userData.armR.rotation.x = walkCycle * 0.5;
+                playerMesh.userData.armR.rotation.y = 0;
+            }
+        }
+        if (factEyeL && factEyeR) {
+            factEyeL.position.y = 1.65 + Math.sin(nowTime * 6) * 0.12;
+            factEyeR.position.y = 1.65 + Math.cos(nowTime * 6) * 0.12;
+            factEyeL.rotation.y = nowTime * 4;
+            factEyeR.rotation.y = -nowTime * 4;
+        }
+        playerMesh.visible = !(player.invulnTimer > 0 && player.invulnTimer < 0.9 && Math.floor(nowTime * 22) % 2 === 0);
+    }
+
+    if (shieldSphereMesh) {
+        shieldSphereMesh.visible = player.invulnTimer > 0.9;
+        shieldSphereMesh.rotation.y = nowTime * 2.5;
+    }
+    if (boostAuraMesh) {
+        boostAuraMesh.visible = player.boostTimer > 0;
+        boostAuraMesh.rotation.z = nowTime * 6;
+        const s = 1 + Math.sin(nowTime * 14) * 0.12;
+        boostAuraMesh.scale.set(s, s, 1);
+    }
+    if (whirlwindMesh) {
+        whirlwindMesh.visible = player.whirlwindTimer > 0;
+        whirlwindMesh.rotation.z = nowTime * 18;
+    }
+
+    // 투사체 업데이트
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+        const p = projectiles[i];
+        p.x += p.vx * dt;
+        p.z += p.vz * dt;
+        p.life -= dt;
+        p.mesh.position.set(p.x, p.y, p.z);
+
+        if (p.fromPlayer) {
+            for (const enemy of enemies) {
+                if (Math.hypot(enemy.x - p.x, enemy.z - p.z) < enemy.radius + p.radius) {
+                    damageEnemy(enemy, p.damage, Math.atan2(p.vx, p.vz), 5);
+                    p.life = 0;
+                    break;
+                }
+            }
+        } else {
+            if (player.y < 1.1 && Math.hypot(player.x - p.x, player.z - p.z) < player.radius + p.radius) {
+                damagePlayer(p.damage);
+                p.life = 0;
+            }
+        }
+
+        if (p.life <= 0 || Math.abs(p.x) > ARENA_HALF_W + 1 || Math.abs(p.z) > ARENA_HALF_D + 1) {
+            scene.remove(p.mesh);
+            projectiles.splice(i, 1);
+        }
+    }
+
+    // 적 AI 업데이트
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        const e = enemies[i];
+        if (e.hp <= 0) {
+            scene.remove(e.mesh);
+            enemies.splice(i, 1);
+            continue;
+        }
+
+        if (e.flashTimer > 0) {
+            e.flashTimer -= dt;
+            e.mesh.userData.hitMaterials.forEach(m => m.color.setHex(0xffffff));
+        } else {
+            e.mesh.userData.hitMaterials.forEach((m, idx) => m.color.setHex(e.mesh.userData.origColors[idx]));
+        }
+
+        if (Math.abs(e.knockX) > 0.05 || Math.abs(e.knockZ) > 0.05) {
+            e.x += e.knockX * dt;
+            e.z += e.knockZ * dt;
+            e.knockX *= 0.85;
+            e.knockZ *= 0.85;
+        }
+
+        const dx = player.x - e.x;
+        const dz = player.z - e.z;
+        const dist = Math.hypot(dx, dz);
+        const angleToPlayer = Math.atan2(dx, dz);
+        e.mesh.rotation.y = angleToPlayer;
+
+        if (e.mesh.userData.legL && e.mesh.userData.legR) {
+            const eWalk = Math.sin(nowTime * 10 + e.x) * 0.55;
+            e.mesh.userData.legL.rotation.x = eWalk;
+            e.mesh.userData.legR.rotation.x = -eWalk;
+        }
+
+        if (e.type === 'slime' || e.type === 'knight') {
+            if (dist > e.radius + player.radius - 0.15) {
+                e.x += Math.sin(angleToPlayer) * e.speed * dt;
+                e.z += Math.cos(angleToPlayer) * e.speed * dt;
+            }
+            if (e.type === 'slime') {
+                const sq = 1 + Math.sin(nowTime * 8 + e.x) * 0.12;
+                e.mesh.scale.set(sq, 1 / sq, sq);
+            }
+        } else if (e.type === 'mage') {
+            if (dist > 11) {
+                e.x += Math.sin(angleToPlayer) * e.speed * dt;
+                e.z += Math.cos(angleToPlayer) * e.speed * dt;
+            } else if (dist < 7.5) {
+                e.x -= Math.sin(angleToPlayer) * e.speed * dt;
+                e.z -= Math.cos(angleToPlayer) * e.speed * dt;
+            }
+            if (e.mesh.userData.orb) e.mesh.userData.orb.position.y = 1.75 + Math.sin(nowTime * 6 + e.x) * 0.2;
+            e.aiTimer -= dt;
+            if (e.aiTimer <= 0) {
+                e.aiTimer = 2.0;
+                spawnProjectile3D(false, e.x, 1.2, e.z, Math.sin(angleToPlayer) * 13, Math.cos(angleToPlayer) * 13, 0.45, e.damage, 2.6, 0xf472b6);
+            }
+        } else if (e.type === 'midboss' || e.type === 'boss') {
+            e.aiTimer -= dt;
+            e.x += Math.sin(angleToPlayer) * e.speed * dt;
+            e.z += Math.cos(angleToPlayer) * e.speed * dt;
+
+            if (e.mesh.userData.leftWing && e.mesh.userData.rightWing) {
+                const flap = Math.sin(nowTime * 9) * 0.35;
+                e.mesh.userData.leftWing.rotation.y = flap;
+                e.mesh.userData.rightWing.rotation.y = -flap;
+            }
+
+            if (e.aiTimer <= 0) {
+                e.pattern = (e.pattern + 1) % 3;
+                if (e.pattern === 0) {
+                    e.aiTimer = 1.65;
+                    const spreadN = e.type === 'boss' ? 2 : 1;
+                    for (let k = -spreadN; k <= spreadN; k++) {
+                        const a = angleToPlayer + k * 0.22;
+                        spawnProjectile3D(false, e.x, 1.3, e.z, Math.sin(a) * 15, Math.cos(a) * 15, 0.5, e.damage, 2.6, 0xc084fc);
+                    }
+                } else if (e.pattern === 1) {
+                    e.aiTimer = 2.0;
+                    const ringN = e.type === 'boss' ? 10 : 6;
+                    for (let k = 0; k < ringN; k++) {
+                        const a = (Math.PI * 2 / ringN) * k + nowTime;
+                        spawnProjectile3D(false, e.x, 1.2, e.z, Math.sin(a) * 12, Math.cos(a) * 12, 0.45, Math.round(e.damage * 0.8), 2.6, 0xf43f5e);
+                    }
+                } else {
+                    e.aiTimer = 1.5;
+                    e.x += Math.sin(angleToPlayer) * 3.8;
+                    e.z += Math.cos(angleToPlayer) * 3.8;
+                    spawnParticles3D(e.x, 1.2, e.z, 0xa855f7, 12, 8);
+                }
+            }
+        }
+
+        e.x = Math.max(-ARENA_HALF_W + 1.2, Math.min(ARENA_HALF_W - 1.2, e.x));
+        e.z = Math.max(-ARENA_HALF_D + 1.2, Math.min(ARENA_HALF_D - 1.2, e.z));
+        e.mesh.position.x = e.x;
+        e.mesh.position.z = e.z;
+
+        if (player.y < 1.1 && Math.hypot(player.x - e.x, player.z - e.z) < player.radius + e.radius) {
+            damagePlayer(e.damage);
+        }
+    }
+
+    // 아이템 획득
+    for (let i = items.length - 1; i >= 0; i--) {
+        const it = items[i];
+        it.bob += dt * 5;
+        it.mesh.position.y = 0.7 + Math.sin(it.bob) * 0.2;
+        it.mesh.rotation.y += dt * 3;
+
+        if (Math.hypot(player.x - it.x, player.z - it.z) < player.radius + 1.0) {
+            playSound('pickup');
+            if (it.type === 'hp') {
+                player.hp = Math.min(player.maxHp, player.hp + 30);
+                addFloatingText(it.x, 1.5, it.z, 'HP +30', '#4ade80');
+            } else {
+                player.mp = Math.min(player.maxMp, player.mp + 40);
+                addFloatingText(it.x, 1.5, it.z, 'SP +40', '#fbbf24');
+            }
+            scene.remove(it.mesh);
+            items.splice(i, 1);
+        }
+    }
+
+    // 파티클 업데이트
+    for (let i = particles.length - 1; i >= 0; i--) {
+        const pt = particles[i];
+        pt.x += pt.vx * dt;
+        pt.y += pt.vy * dt;
+        pt.z += pt.vz * dt;
+        pt.vy -= 18 * dt;
+        pt.life -= dt;
+        pt.mesh.position.set(pt.x, Math.max(0.05, pt.y), pt.z);
+        pt.mesh.scale.setScalar(Math.max(0.01, pt.life * 2.2));
+        if (pt.life <= 0) {
+            scene.remove(pt.mesh);
+            particles.splice(i, 1);
+        }
+    }
+
+    // 플로팅 텍스트 업데이트
+    for (let i = floatingTexts.length - 1; i >= 0; i--) {
+        const ft = floatingTexts[i];
+        ft.wy += dt * 2.0;
+        ft.life -= dt;
+        if (ft.life <= 0) {
+            ft.el.remove();
+            floatingTexts.splice(i, 1);
+            continue;
+        }
+        const vec = new THREE.Vector3(ft.wx, ft.wy, ft.wz);
+        vec.project(camera);
+        if (vec.z > 1) {
+            ft.el.style.display = 'none';
+        } else {
+            ft.el.style.display = 'block';
+            const sx = (vec.x * 0.5 + 0.5) * threeContainer.clientWidth;
+            const sy = (-vec.y * 0.5 + 0.5) * threeContainer.clientHeight;
+            ft.el.style.left = `${sx}px`;
+            ft.el.style.top = `${sy}px`;
+            ft.el.style.opacity = Math.min(1, ft.life * 1.8);
+        }
+    }
+
+    // 문(포탈) 및 여신의 석상 상태 동기화
+    const clearedNow = (enemies.length === 0);
+    if (clearedNow !== nextDoorOpen) {
+        updateDoorState(clearedNow);
+        if (clearedNow && wave < TOTAL_STAGES) {
+            addFloatingText(0, 3.2, 0, '여신의 석상 출현 & 상층 계단 개방!', '#fbbf24');
+        }
+    } else if (!clearedNow) {
+        if (doorStatusBadge) doorStatusBadge.textContent = `🔒 마물 봉인 (${enemies.length}체)`;
+        if (guideNextDoor) guideNextDoor.textContent = `🔒 북쪽 계단문: 남은 마물 ${enemies.length}체 처치 시 개방`;
+    }
+
+    // 여신의 석상 접촉 시 체력 회복 효과
+    if (statueActive && Math.hypot(player.x, player.z) < 2.6 && statueHealCooldown <= 0) {
+        if (player.hp < player.maxHp) {
+            player.hp = player.maxHp;
+            player.mp = player.maxMp;
+            statueHealCooldown = 3.0;
+            playSound('pickup');
+            spawnParticles3D(0, 1.8, 0, 0x38bdf8, 16, 8);
+            addFloatingText(0, 2.8, 0, '여신의 축복: HP/SP 완전 회복!', '#38bdf8');
+        }
+    }
+
+    // 계단 문 진입 판정
+    if (doorTransitionCooldown <= 0) {
+        if (nextDoorOpen && wave < TOTAL_STAGES && Math.abs(player.x) < 2.4 && player.z < -ARENA_HALF_D + 2.3) {
+            enterStageFloor(wave + 1, true);
+            return;
+        }
+        if (wave > 1 && Math.abs(player.x) < 2.2 && player.z > ARENA_HALF_D - 2.3) {
+            enterStageFloor(wave - 1, false);
+            return;
+        }
+    }
+
+    // 카메라 추적 (원작 쿼터뷰 / 3인칭 백뷰)
+    if (camera) {
+        const shakeX = screenShake > 0 ? (Math.random() - 0.5) * screenShake * 0.8 : 0;
+        const shakeY = screenShake > 0 ? (Math.random() - 0.5) * screenShake * 0.8 : 0;
+
+        if (cameraMode === 'QUARTER') {
+            const distBack = 13.0;
+            const camHeight = 12.5;
+            const targetCamX = player.x - Math.sin(cameraYaw) * distBack + shakeX;
+            const targetCamZ = player.z - Math.cos(cameraYaw) * distBack;
+
+            camera.position.lerp(new THREE.Vector3(targetCamX, camHeight + shakeY, targetCamZ), 0.18);
+            camera.lookAt(player.x, 1.0, player.z);
+        } else {
+            const distBack = 7.4;
+            const camHeight = 4.2 + player.y * 0.5;
+            const targetCamX = player.x - Math.sin(cameraYaw) * distBack + shakeX;
+            const targetCamZ = player.z - Math.cos(cameraYaw) * distBack;
+
+            camera.position.lerp(new THREE.Vector3(targetCamX, camHeight + shakeY, targetCamZ), 0.18);
+            camera.lookAt(
+                player.x + Math.sin(cameraYaw) * 5.0,
+                1.5 + player.y * 0.4,
+                player.z + Math.cos(cameraYaw) * 5.0
+            );
+        }
+    }
+
+    updateHUD();
+}
+
+function updateHUD() {
+    if (heroNameHud) heroNameHud.textContent = currentHero.name;
+    if (lvText) lvText.textContent = player.level;
+    if (expText) expText.textContent = `EXP ${player.exp} / ${player.nextExp}`;
+    if (expBar) expBar.style.width = `${Math.min(100, (player.exp / player.nextExp) * 100)}%`;
+
+    const realm = getRealmForFloor(wave);
+    goldText.textContent = `${gold.toLocaleString()} SP`;
+    stageLabel.textContent = `DARM TOWER ${wave}F · ${realm.name.split(' ')[0]}`;
+
+    const hpRatio = Math.max(0, Math.min(1, player.hp / player.maxHp));
+    const mpRatio = Math.max(0, Math.min(1, player.mp / player.maxMp));
+    const burstRatio = Math.max(0, Math.min(1, player.burst / 100));
+
+    const currentSk = currentHero.skills[currentSkillIndex];
+    const skillRatio = Math.max(0, Math.min(1, player.mp / currentSk.cost));
+
+    if (ringBurst) {
+        ringBurst.style.strokeDashoffset = CIRC_BURST * (1 - burstRatio);
+        ringBurst.style.stroke = player.boostTimer > 0 ? '#f43f5e' : '#f59e0b';
+    }
+    if (ringMp) ringMp.style.strokeDashoffset = CIRC_MP * (1 - mpRatio);
+    if (ringSkill) {
+        ringSkill.style.strokeDashoffset = CIRC_SKILL * (1 - skillRatio);
+        ringSkill.style.stroke = skillRatio >= 1 ? '#38bdf8' : '#475569';
+    }
+
+    if (hpText) hpText.textContent = Math.ceil(player.hp);
+    if (ringStatusMini) ringStatusMini.textContent = `SP ${Math.floor(player.mp)}`;
+    if (hpCoreCircle) {
+        const pct = Math.round(hpRatio * 100);
+        hpCoreCircle.style.background = `linear-gradient(to top, rgba(225,29,72,0.92) ${pct}%, rgba(15,23,42,0.95) ${pct}%)`;
+    }
+
+    if (legendHp) legendHp.textContent = `${Math.ceil(player.hp)}/${player.maxHp}`;
+    if (legendMp) legendMp.textContent = `${Math.floor(player.mp)}/${player.maxMp}`;
+    if (legendSkill) legendSkill.textContent = skillRatio >= 1 ? `${currentSk.name} 가능` : `SP 부족 (${currentSk.cost})`;
+    if (legendBurst) {
+        legendBurst.textContent = player.boostTimer > 0
+            ? `BOOST중! (R키 EX필살)`
+            : `${Math.floor(player.burst)}%`;
+    }
+
+    if (player.boostTimer > 0) {
+        btnUltimate.classList.remove('opacity-50');
+        btnUltimate.classList.add('boost-ready');
+        if (boostBtnLabel) boostBtnLabel.textContent = 'EX 필살!';
+    } else if (player.burst >= 100) {
+        btnUltimate.classList.remove('opacity-50');
+        btnUltimate.classList.add('boost-ready');
+        if (boostBtnLabel) boostBtnLabel.textContent = 'BOOST!';
+    } else {
+        btnUltimate.classList.add('opacity-50');
+        btnUltimate.classList.remove('boost-ready');
+        if (boostBtnLabel) boostBtnLabel.textContent = 'BOOST';
+    }
+
+    if (combo >= 2) {
+        comboHud.classList.remove('hidden');
+        comboHud.textContent = `${combo} HIT!`;
+    } else {
+        comboHud.classList.add('hidden');
+    }
+}
+
+// ==========================================
+// 10. 게임 시작 / 종료 및 메인 애니메이션 루프
+// ==========================================
+function resetGame() {
+    currentHero = HEROES[selectedHeroKey];
+    if (charBadge) {
+        charBadge.className = `w-9 h-9 rounded-full bg-gradient-to-br ${currentHero.badgeClass} border-2 border-amber-300 flex flex-col items-center justify-center font-black text-white shadow-md leading-none`;
+    }
+
+    createPlayer3DMesh();
+
+    score = 0;
+    gold = 0;
+    combo = 0;
+    comboTimer = 0;
+    wave = 1;
+    bossSpawned = false;
+
+    player.level = 1;
+    player.exp = 0;
+    player.nextExp = 100;
+
+    ownedWeapons = ['short'];
+    ownedArmors = ['tunic'];
+    equipWeapon(WEAPONS[0]);
+    equipArmor(ARMORS[0]);
+    recalcPlayerStats(true);
+
+    currentSkillIndex = 0;
+    const firstSk = currentHero.skills[0];
+    skillBtnName.textContent = firstSk.name;
+    skillBtnCost.textContent = `SP ${firstSk.cost}`;
+
+    player.burst = 0;
+    player.boostTimer = 0;
+    player.invulnTimer = 0;
+    player.dashTimer = 0;
+    player.attackCooldown = 0;
+
+    if (shopModal) shopModal.classList.add('hidden');
+
+    enterStageFloor(1, true);
+}
+
+function startGame() {
+    initAudio();
+    overlayScreen.classList.add('hidden');
+    resetGame();
+    gameState = 'PLAYING';
+    startBGM();
+}
+
+function endGame(isVictory) {
+    gameState = isVictory ? 'VICTORY' : 'GAMEOVER';
+    stopBGM();
+    overlayScreen.classList.remove('hidden');
+
+    if (isVictory) {
+        overlayTitle.textContent = 'YS ORIGIN · DARM TOWER CLEARED!';
+        overlayTitle.className = 'ys-title text-2xl sm:text-4xl font-black text-amber-300 mb-2';
+        overlaySubtitle.innerHTML = `<b>${currentHero.koName}</b>와(과) 함께 다암의 탑 최심부의 마왕을 물리치고 두 여신을 구원했습니다!<br>최종 레벨: <b class="text-sky-300">LV.${player.level}</b> &nbsp;|&nbsp; 최종 점수: <span class="text-emerald-400 font-black">${score.toLocaleString()} PTS</span>`;
+        startBtn.textContent = '다른 주인공으로 다시 도전';
+    } else {
+        overlayTitle.textContent = 'YOU HAVE FALLEN IN THE TOWER...';
+        overlayTitle.className = 'ys-title text-2xl sm:text-4xl font-black text-red-500 mb-2';
+        overlaySubtitle.innerHTML = `다암의 탑 <b>${wave}층</b>에서 쓰러졌습니다. (도달 레벨: <b class="text-sky-300">LV.${player.level}</b>)<br>여신의 석상에서 무구를 연성하거나 이전 층에서 레벨업 후 다시 도전하세요!`;
+        startBtn.textContent = '다시 등반하기 (RETRY)';
+    }
+}
+
+startBtn.addEventListener('click', startGame);
+
+let lastFrameTime = performance.now();
+function animateLoop(now) {
+    requestAnimationFrame(animateLoop);
+    const dt = Math.min(0.05, (now - lastFrameTime) / 1000);
+    lastFrameTime = now;
+
+    update(dt);
+    if (renderer && scene && camera) {
+        renderer.render(scene, camera);
+    }
+}
+
+window.onload = function () {
+    initThreeJS();
+    buildStageMap(1);
+    if (playerMesh) {
+        playerMesh.position.set(0, 0, 14);
+        playerMesh.rotation.y = Math.PI;
+    }
+    camera.position.set(0, 12.5, 27);
+    camera.lookAt(0, 1.0, 14);
+    animateLoop(performance.now());
+};
+</script>
+</body>
+</html>
