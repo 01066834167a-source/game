@@ -80,6 +80,20 @@
             0%, 100% { box-shadow: 0 0 12px rgba(245, 158, 11, 0.5); }
             50% { box-shadow: 0 0 28px rgba(251, 191, 36, 1); }
         }
+        #boss-banner {
+            position: absolute; left: 0; right: 0; top: 24%; z-index: 15; opacity: 0;
+            pointer-events: none; text-align: center; padding: 10px 0;
+            background: linear-gradient(90deg, transparent, rgba(2,6,23,0.85) 25%, rgba(2,6,23,0.85) 75%, transparent);
+        }
+        #boss-banner.show { animation: bannerShow 2s ease both; }
+        .banner-title { font-size: clamp(18px, 4vw, 34px); color: #fde047; }
+        .banner-sub { font-size: 13px; color: #f0abfc; font-weight: 700; }
+        @keyframes bannerShow {
+            0% { opacity: 0; transform: scaleY(0.2); }
+            12%, 80% { opacity: 1; transform: scaleY(1); }
+            100% { opacity: 0; }
+        }
+
         .boost-ready {
             animation: boostPulse 1.2s infinite;
         }
@@ -1820,6 +1834,10 @@ function enterStageFloor(targetFloor, enteredFromSouth) {
     player.lifestealTimer = 0;
     timers = [];
     [...telegraphs].forEach(removeTelegraph);
+    clearBossEffects();
+    hideBanner();
+    slowMoTimer = 0;
+    victoryPending = false;
     player.velX = 0;
     player.velZ = 0;
 
@@ -2718,8 +2736,10 @@ function spawnAreaBoss(floor) {
         expReward: Math.round(320 * sc.expMult),
         goldReward: Math.round(140 * sc.goldMult),
         colorHex: isFinal ? 0xa855f7 : 0xdc2626,
-        aiTimer: 1.2, pattern: 0, knockX: 0, knockZ: 0, flashTimer: 0, mesh
+        knockX: 0, knockZ: 0, flashTimer: 0, mesh
     });
+    const boss = enemies[enemies.length - 1];
+    initBoss(boss, floor);
 }
 
 function spawnWaveEnemies(w) {
@@ -2996,12 +3016,399 @@ function initEnemyAI(e) {
 }
 
 // ==========================================
+// 7-2. 영역 수호 보스: 고유 패턴 & 3페이즈
+// ==========================================
+let hazards = [];    // 지속 장판
+let shockwaves = []; // 퍼져 나가는 충격 고리 (점프로 넘기)
+let victoryPending = false;
+let slowMoTimer = 0;
+
+function showBanner(title, sub, ms = 2000) {
+    let el = document.getElementById('boss-banner');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'boss-banner';
+        document.getElementById('game-wrapper').appendChild(el);
+    }
+    el.innerHTML = '';
+    const a = document.createElement('div'); a.className = 'banner-title ys-title'; a.textContent = title;
+    const b = document.createElement('div'); b.className = 'banner-sub'; b.textContent = sub;
+    el.append(a, b);
+    el.classList.remove('show');
+    void el.offsetWidth;
+    el.style.animationDuration = `${ms}ms`;
+    el.classList.add('show');
+}
+
+function hideBanner() {
+    const el = document.getElementById('boss-banner');
+    if (el) el.classList.remove('show');
+}
+
+// 예고 → delay 후 판정. 보스가 쓰러지거나 페이즈가 바뀌면 예약된 공격은 취소됨
+function bossLater(b, delay, fn) {
+    const token = b.token;
+    schedule(delay, () => { if (b.hp > 0 && b.token === token) fn(); });
+}
+
+function bossZone(b, shape, delay, dmgMult, color, after) {
+    const tg = createTelegraph(shape, delay, color);
+    bossLater(b, delay, () => {
+        removeTelegraph(tg);
+        if (dmgMult > 0) strikePlayerInShape(shape, Math.round(b.damage * dmgMult));
+        if (shape.type === 'circle') {
+            spawnHitRing(shape.x, shape.z, color, shape.r / 1.6);
+            spawnParticles3D(shape.x, 0.6, shape.z, color, 8, 8);
+        }
+        screenShake = Math.max(screenShake, 0.18);
+        if (after) after();
+    });
+}
+
+function bossShot(b, x, z, angle, speed, dmgMult, color, radius = 0.45) {
+    spawnProjectile3D(false, x, 1.2, z, Math.sin(angle) * speed, Math.cos(angle) * speed, radius, Math.round(b.damage * dmgMult), 3.4, color);
+}
+
+function bossRing(b, count, phase, speed, color) {
+    for (let k = 0; k < count; k++) bossShot(b, b.x, b.z, Math.PI * 2 / count * k + phase, speed, 0.7, color);
+}
+
+function addHazard(b, x, z, r, life, color) {
+    const mesh = new THREE.Mesh(new THREE.CircleGeometry(r, 24), new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.4, depthWrite: false }));
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(x, 0.07, z);
+    scene.add(mesh);
+    hazards.push({ x, z, r, life, arm: 0.5, damage: Math.round(b.damage * 0.45), mesh, owner: b });
+}
+
+function addShockwave(b, x, z, speed, color) {
+    const mesh = new THREE.Mesh(new THREE.TorusGeometry(1, 0.035, 6, 48), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+    mesh.rotation.x = Math.PI / 2;
+    mesh.position.set(x, 0.35, z);
+    scene.add(mesh);
+    shockwaves.push({ x, z, r: 1.5, speed, max: 28, hit: false, damage: Math.round(b.damage * 0.9), mesh, owner: b });
+}
+
+function updateBossEffects(dt) {
+    for (let i = hazards.length - 1; i >= 0; i--) {
+        const h = hazards[i];
+        h.life -= dt;
+        if (h.arm > 0) h.arm -= dt;
+        else if (player.y < 0.4 && Math.hypot(player.x - h.x, player.z - h.z) < h.r) damagePlayer(h.damage);
+        if (h.life <= 0) { removeEffectMesh(h.mesh); hazards.splice(i, 1); }
+    }
+    for (let i = shockwaves.length - 1; i >= 0; i--) {
+        const w = shockwaves[i];
+        w.r += w.speed * dt;
+        w.mesh.scale.set(w.r, w.r, 1);
+        if (!w.hit && player.y < 0.7 && Math.abs(Math.hypot(player.x - w.x, player.z - w.z) - w.r) < 0.8) {
+            w.hit = true;
+            damagePlayer(w.damage);
+        }
+        if (w.r > w.max) { removeEffectMesh(w.mesh); shockwaves.splice(i, 1); }
+    }
+}
+
+function clearBossEffects() {
+    hazards.forEach(h => removeEffectMesh(h.mesh));
+    shockwaves.forEach(w => removeEffectMesh(w.mesh));
+    hazards = [];
+    shockwaves = [];
+}
+
+// 돌진: 경로 예고 → 고속 이동 (몸통 판정)
+function bossCharge(b, delay, len, onStep) {
+    const ang = Math.atan2(player.x - b.x, player.z - b.z);
+    b.faceLock = ang;
+    bossZone(b, { type: 'line', x: b.x, z: b.z, angle: ang, len, width: b.radius * 2 + 0.8 }, delay, 0, 0xf59e0b, () => {
+        b.charge = { angle: ang, t: len / 30, speed: 30, hit: false, onStep, drop: 0 };
+    });
+}
+
+// 각 패턴은 실행 시간(초)을 반환. unlock: 해당 페이즈부터 사용
+const BOSS_KITS = [
+    { // 1. 수계: 틈이 있는 해일, 물기둥, 소용돌이
+        title: '심해의 파도', keep: 8, attacks: [
+            { name: '해일', unlock: 1, run(b, ph) {
+                const waves = ph >= 3 ? 3 : ph;
+                for (let w = 0; w < waves; w++) bossLater(b, 0.7 + w * 0.75, () => {
+                    const base = Math.atan2(player.x - b.x, player.z - b.z);
+                    const gap = Math.floor(Math.random() * 5) - 2;
+                    for (let k = -8; k <= 8; k++) if (Math.abs(k - gap * 2) > 1) bossShot(b, b.x, b.z, base + k * 0.14, 10, 0.75, 0x38bdf8);
+                });
+                return 1.2 + waves * 0.75;
+            } },
+            { name: '물기둥', unlock: 1, run(b, ph) {
+                for (let k = 0; k < 3 + ph; k++) bossLater(b, 0.01 + k * 0.32, () => bossZone(b, { type: 'circle', x: player.x, z: player.z, r: 2.3 }, 0.8, 1.0, 0x38bdf8));
+                return 1.4 + (3 + ph) * 0.32;
+            } },
+            { name: '대소용돌이', unlock: 2, run(b) {
+                bossZone(b, { type: 'circle', x: b.x, z: b.z, r: 7 }, 2.0, 1.4, 0x0ea5e9);
+                b.pull = { t: 2.0, force: 5 };
+                return 2.6;
+            } }
+        ]
+    },
+    { // 2. 화계: 불길을 남기는 돌진, 화염 브레스, 낙석
+        title: '타오르는 야수', keep: 5, attacks: [
+            { name: '화염 돌진', unlock: 1, run(b, ph) {
+                const n = ph;
+                for (let k = 0; k < n; k++) bossLater(b, 0.01 + k * 1.35, () => bossCharge(b, 0.75, 15, () => addHazard(b, b.x, b.z, 1.5, 3.5, 0xea580c)));
+                return n * 1.35 + 0.8;
+            } },
+            { name: '화염 숨결', unlock: 1, run(b) {
+                const ang = Math.atan2(player.x - b.x, player.z - b.z);
+                b.faceLock = ang;
+                bossZone(b, { type: 'sector', x: b.x, z: b.z, angle: ang, r: 11, half: 0.62 }, 0.95, 1.25, 0xf97316);
+                return 1.8;
+            } },
+            { name: '용암 낙하', unlock: 2, run(b, ph) {
+                for (let k = 0; k < 4 + ph; k++) {
+                    const x = player.x + (k ? (Math.random() - 0.5) * 12 : 0), z = player.z + (k ? (Math.random() - 0.5) * 12 : 0);
+                    bossLater(b, 0.01 + k * 0.18, () => bossZone(b, { type: 'circle', x, z, r: 2.1 }, 0.9, 0.9, 0xef4444, () => addHazard(b, x, z, 1.8, 4, 0xdc2626)));
+                }
+                return 2.4;
+            } }
+        ]
+    },
+    { // 3. 사계: 점프로 넘는 지진파, 갈라지는 대지, 모래 늪
+        title: '대지를 흔드는 거신', keep: 4, attacks: [
+            { name: '지진파 (점프!)', unlock: 1, run(b, ph) {
+                for (let k = 0; k < ph; k++) bossZone(b, { type: 'circle', x: b.x, z: b.z, r: 2.8 }, 0.8 + k * 0.9, 1.0, 0xfbbf24, () => addShockwave(b, b.x, b.z, 12, 0xfbbf24));
+                return 1.4 + ph * 0.9;
+            } },
+            { name: '대지 균열', unlock: 1, run(b, ph) {
+                const base = Math.atan2(player.x - b.x, player.z - b.z);
+                const offs = ph >= 3 ? [-1.2, -0.6, 0, 0.6, 1.2] : (ph === 2 ? [-0.55, 0, 0.55] : [0]);
+                offs.forEach(o => bossZone(b, { type: 'line', x: b.x, z: b.z, angle: base + o, len: 20, width: 2.4 }, 1.0, 1.15, 0xd97706));
+                return 1.9;
+            } },
+            { name: '유사 지옥', unlock: 2, run(b) {
+                const x = player.x, z = player.z;
+                bossZone(b, { type: 'circle', x, z, r: 4 }, 1.0, 0, 0xa16207, () => addHazard(b, x, z, 3.6, 5, 0xa16207));
+                return 1.5;
+            } }
+        ]
+    },
+    { // 4. 마계: 회전 탄막, 순간이동 처형, 십자 광선
+        title: '피의 심판', keep: 10, attacks: [
+            { name: '나선 탄막', unlock: 1, run(b, ph) {
+                const arms = ph + 1;
+                for (let k = 0; k < 16; k++) bossLater(b, 0.5 + k * 0.12, () => {
+                    for (let a = 0; a < arms; a++) bossShot(b, b.x, b.z, k * 0.27 + a * Math.PI * 2 / arms, 9.5, 0.65, 0xd946ef);
+                });
+                return 2.8;
+            } },
+            { name: '심판의 도약', unlock: 1, run(b, ph) {
+                for (let k = 0; k < ph; k++) bossLater(b, 0.01 + k * 1.1, () => {
+                    spawnParticles3D(b.x, 1.5, b.z, 0xd946ef, 14, 9);
+                    const a = player.angle + Math.PI;
+                    [b.x, b.z] = pushOutOfWalls(Math.max(-24, Math.min(24, player.x + Math.sin(a) * 3)), Math.max(-24, Math.min(24, player.z + Math.cos(a) * 3)), 1.2);
+                    bossZone(b, { type: 'circle', x: b.x, z: b.z, r: 4.4 }, 0.75, 1.2, 0xc026d3);
+                });
+                return ph * 1.1 + 0.7;
+            } },
+            { name: '십자 광선', unlock: 2, run(b, ph) {
+                const x = player.x, z = player.z;
+                const cross = (off, delay) => [0, 1, 2, 3].forEach(i => bossZone(b, { type: 'line', x, z, angle: off + i * Math.PI / 2, len: 22, width: 2.0 }, delay, 1.0, 0xa21caf));
+                cross(0, 1.0);
+                if (ph >= 3) cross(Math.PI / 4, 1.8);
+                return ph >= 3 ? 2.5 : 1.7;
+            } }
+        ]
+    },
+    { // 5. 환계: 연속 돌진 검무, 분신 협공, 쌍둥이 소환
+        title: '환영의 검무', keep: 5, onPhase(b, ph) {
+            if (ph === 2) { spawnEnemy('knight'); spawnEnemy('knight'); addFloatingText(b.x, 3, b.z, '쌍둥이 환영 출현!', '#34d399'); }
+        }, attacks: [
+            { name: '질풍 검', unlock: 1, run(b, ph) {
+                for (let k = 0; k <= ph; k++) bossLater(b, 0.01 + k * 0.95, () => bossCharge(b, 0.55, 12));
+                return (ph + 1) * 0.95 + 0.6;
+            } },
+            { name: '분신 협공', unlock: 1, run(b, ph) {
+                const x = player.x, z = player.z, base = Math.random() * Math.PI;
+                for (let k = 0; k < 2 + ph; k++) {
+                    const a = base + k * Math.PI / (2 + ph);
+                    bossLater(b, 0.01 + k * 0.28, () => bossZone(b, { type: 'line', x: x - Math.sin(a) * 11, z: z - Math.cos(a) * 11, angle: a, len: 22, width: 1.9 }, 0.85, 0.9, 0x34d399));
+                }
+                return 1.5 + (2 + ph) * 0.28;
+            } },
+            { name: '원월참', unlock: 2, run(b) {
+                const ang = Math.atan2(player.x - b.x, player.z - b.z);
+                bossZone(b, { type: 'sector', x: b.x, z: b.z, angle: ang, r: 7.5, half: 1.57 }, 0.75, 1.1, 0x10b981);
+                bossZone(b, { type: 'sector', x: b.x, z: b.z, angle: ang + Math.PI, r: 7.5, half: 1.57 }, 1.5, 1.1, 0x10b981);
+                return 2.1;
+            } }
+        ]
+    },
+    { // 6. 최심부 마왕: 회전 광선, 유성우, 파동, 마탄 고리
+        title: '다암의 마왕', keep: 7, attacks: [
+            { name: '마탄 고리', unlock: 1, run(b, ph) {
+                for (let k = 0; k < 2 + ph; k++) bossLater(b, 0.6 + k * 0.45, () => bossRing(b, 14, k * 0.22, 10.5, 0xf43f5e));
+                return 1.2 + (2 + ph) * 0.45;
+            } },
+            { name: '회전 파멸광', unlock: 1, run(b, ph) {
+                const base = Math.atan2(player.x - b.x, player.z - b.z) + 0.7;
+                const dir = Math.random() < 0.5 ? 1 : -1;
+                for (let k = 0; k < 6; k++) {
+                    for (let a = 0; a < ph; a++) bossLater(b, 0.01 + k * 0.38, () => bossZone(b, { type: 'line', x: b.x, z: b.z, angle: base + dir * k * 0.45 + a * Math.PI * 2 / ph, len: 24, width: 1.8 }, 0.65, 1.0, 0xfde047));
+                }
+                return 3.2;
+            } },
+            { name: '종말의 유성', unlock: 2, run(b, ph) {
+                for (let k = 0; k < 6 + ph * 2; k++) bossLater(b, 0.01 + k * 0.2, () => bossZone(b, { type: 'circle', x: player.x + (k % 2 ? (Math.random() - 0.5) * 9 : 0), z: player.z + (k % 2 ? (Math.random() - 0.5) * 9 : 0), r: 2.2 }, 0.8, 0.9, 0xf97316));
+                return 1.6 + (6 + ph * 2) * 0.2;
+            } },
+            { name: '심연의 파동 (점프!)', unlock: 3, run(b) {
+                for (let k = 0; k < 3; k++) bossZone(b, { type: 'circle', x: b.x, z: b.z, r: 3 }, 0.9 + k * 0.85, 0.9, 0xa855f7, () => addShockwave(b, b.x, b.z, 13, 0xa855f7));
+                return 3.8;
+            } }
+        ]
+    }
+];
+
+function initBoss(b, floor) {
+    b.kit = Math.min(5, Math.floor((floor - 1) / 5));
+    b.phase = 1;
+    b.token = 0;
+    b.mode = 'intro';
+    b.modeT = 2.0;
+    b.invulnerable = true;
+    b.patternIdx = -1;
+    b.charge = null;
+    b.pull = null;
+    b.faceLock = null;
+    showBanner(`${floor}F · ${b.name}`, BOSS_KITS[b.kit].title, 2200);
+    playSound('ultimate');
+    screenShake = 0.5;
+}
+
+function updateBossLabel(b) {
+    if (bossNameLabel) bossNameLabel.textContent = `${wave}F GUARDIAN · ${b.name} · PHASE ${b.phase}/3`;
+}
+
+function startBossPhase(b, phase) {
+    b.phase = phase;
+    b.token++; // 이전 페이즈의 예약 공격 취소
+    [...telegraphs].forEach(tg => { if (!enemies.some(e => e.tele === tg)) removeTelegraph(tg); });
+    clearBossEffects();
+    clearEnemyProjectiles(Infinity);
+    b.charge = null;
+    b.pull = null;
+    b.faceLock = null;
+    b.mode = 'transition';
+    b.modeT = 1.4;
+    b.invulnerable = true;
+    b.patternIdx = -1;
+    screenShake = 0.7;
+    slowMoTimer = 0.35;
+    playSound('ultimate');
+    spawnHitRing(b.x, b.z, 0xf43f5e, 5);
+    showBanner(`PHASE ${phase}`, phase === 3 ? `${b.name} 최후의 발악!` : `${b.name}의 힘이 각성한다`, 1400);
+    const d = Math.hypot(player.x - b.x, player.z - b.z);
+    if (d < 7) movePlayer((player.x - b.x) / (d || 1) * 4, (player.z - b.z) / (d || 1) * 4);
+    const kit = BOSS_KITS[b.kit];
+    if (kit.onPhase) kit.onPhase(b, phase);
+    updateBossLabel(b);
+}
+
+function updateBoss(b, dt, dist, ang, now) {
+    const kit = BOSS_KITS[b.kit];
+    b.mesh.rotation.y = b.faceLock ?? ang;
+    if (b.mesh.userData.leftWing && b.mesh.userData.rightWing) {
+        const flap = Math.sin(now * 9) * 0.35;
+        b.mesh.userData.leftWing.rotation.y = flap;
+        b.mesh.userData.rightWing.rotation.y = -flap;
+    }
+    if (b.pull) {
+        b.pull.t -= dt;
+        if (player.dashTimer <= 0) movePlayer((b.x - player.x) / (dist || 1) * b.pull.force * dt, (b.z - player.z) / (dist || 1) * b.pull.force * dt);
+        if (b.pull.t <= 0) b.pull = null;
+    }
+    if (b.charge) {
+        const c = b.charge;
+        c.t -= dt;
+        c.drop -= dt;
+        moveEnemy(b, Math.sin(c.angle) * c.speed * dt, Math.cos(c.angle) * c.speed * dt);
+        if (c.onStep && c.drop <= 0) { c.drop = 0.1; c.onStep(); }
+        if (!c.hit && player.y < 1.1 && Math.hypot(player.x - b.x, player.z - b.z) < b.radius + player.radius) {
+            c.hit = true;
+            damagePlayer(Math.round(b.damage * 1.1));
+        }
+        if (c.t <= 0) { b.charge = null; b.faceLock = null; }
+    }
+
+    b.modeT -= dt;
+    if (b.mode === 'intro' || b.mode === 'transition') {
+        if (b.modeT <= 0) {
+            b.invulnerable = false;
+            b.mode = 'idle';
+            b.modeT = 0.5;
+            updateBossLabel(b);
+        }
+    } else if (b.mode === 'idle') {
+        if (dist > kit.keep) moveEnemy(b, Math.sin(chaseAngle(b)) * b.speed * 0.8 * dt, Math.cos(chaseAngle(b)) * b.speed * 0.8 * dt);
+        if (b.modeT <= 0) {
+            const pool = kit.attacks.filter(a => a.unlock <= b.phase);
+            // 페이즈 진입 직후에는 새로 해금된 기술부터 보여줌
+            if (b.patternIdx < 0) b.patternIdx = b.phase > 1 ? Math.max(0, pool.findIndex(a => a.unlock === b.phase)) : 0;
+            else b.patternIdx = (b.patternIdx + 1) % pool.length;
+            const atk = pool[b.patternIdx];
+            b.faceLock = null;
+            addFloatingText(b.x, 3.4, b.z, atk.name, '#f0abfc');
+            b.lastAttack = atk.name;
+            b.mode = 'busy';
+            b.modeT = atk.run(b, b.phase);
+        }
+    } else if (b.mode === 'busy' && b.modeT <= 0) {
+        b.faceLock = null;
+        b.mode = 'idle';
+        b.modeT = 1.35 - b.phase * 0.2; // 공격 후 반격할 틈
+    }
+}
+
+function onBossDefeated(b) {
+    b.token++;
+    [...telegraphs].forEach(removeTelegraph);
+    enemies.forEach(e => { e.tele = null; if (e.ai === 'windup') setAI(e, 'recover', 0.5); });
+    clearBossEffects();
+    clearEnemyProjectiles(Infinity);
+    bossHud.classList.add('hidden');
+    bossHud.classList.remove('flex');
+    slowMoTimer = 1.1;
+    screenShake = 1.0;
+    playSound('ultimate');
+    const { x, z, colorHex } = b;
+    for (let k = 0; k < 5; k++) schedule(0.001 + k * 0.14, () => {
+        spawnParticles3D(x + (Math.random() - 0.5) * 3, 1 + Math.random() * 2, z + (Math.random() - 0.5) * 3, k % 2 ? 0xfde047 : colorHex, 20, 13);
+        spawnHitRing(x, z, 0xfde047, 2 + k);
+        playSound('heavyhit');
+    });
+    showBanner('GUARDIAN DEFEATED', `${b.name} 격파!`, 2200);
+    if (b.type === 'boss') {
+        victoryPending = true;
+        player.invulnTimer = 99;
+        schedule(1.2, () => endGame(true));
+    }
+}
+
+// ==========================================
 // 8. 대미지, 경험치/레벨업, 마정석 드롭
 // ==========================================
 const KNOCK_RESIST = { slime: 1.15, knight: 0.7, mage: 1.0 };
 
 function damageEnemy(enemy, amount, hitAngle, knockForce, opts = {}) {
     if (enemy.hp <= 0) return; // 이미 쓰러진 적은 다시 처리하지 않음 (보상 중복 방지)
+    if (enemy.invulnerable) return;
+    let nextPhase = 0;
+    if (enemy.kit !== undefined && enemy.phase < 3) {
+        // 한 방에 페이즈를 건너뛰지 않도록 경계에서 멈춤
+        const gate = Math.ceil(enemy.maxHp * (enemy.phase === 1 ? 0.66 : 0.33));
+        if (enemy.hp - amount <= gate) {
+            amount = Math.max(1, enemy.hp - gate);
+            nextPhase = enemy.phase + 1;
+        }
+    }
     enemy.hp -= amount;
     enemy.flashTimer = 0.1;
     const isBossType = enemy.type === 'boss' || enemy.type === 'midboss';
@@ -3061,14 +3468,9 @@ function damageEnemy(enemy, amount, hitAngle, knockForce, opts = {}) {
             items.push({ x: enemy.x, z: enemy.z, type: itType, bob: 0, mesh: itMesh });
         }
 
-        if (enemy.type === 'midboss') {
-            bossHud.classList.add('hidden');
-            bossHud.classList.remove('flex');
-        } else if (enemy.type === 'boss') {
-            bossHud.classList.add('hidden');
-            bossHud.classList.remove('flex');
-            setTimeout(() => endGame(true), 600);
-        }
+        if (enemy.type === 'midboss' || enemy.type === 'boss') onBossDefeated(enemy);
+    } else if (nextPhase) {
+        startBossPhase(enemy, nextPhase);
     }
 }
 
@@ -3189,6 +3591,10 @@ function update(dt) {
         hitStopTimer -= dt;
         return;
     }
+    if (slowMoTimer > 0) {
+        slowMoTimer -= dt;
+        dt *= 0.4;
+    }
 
     const nowTime = performance.now() * 0.001;
 
@@ -3209,6 +3615,7 @@ function update(dt) {
     updateAttack(dt);
     updateHitRings(dt);
     updateTelegraphs(dt);
+    updateBossEffects(dt);
     if (player.invulnTimer > 0) player.invulnTimer -= dt;
     if (player.boostTimer > 0) {
         player.boostTimer -= dt;
@@ -3414,40 +3821,8 @@ function update(dt) {
 
         if (ENEMY_BRAINS[e.type]) {
             updateMinion(e, dt, dist, angleToPlayer, nowTime);
-        } else if (e.type === 'midboss' || e.type === 'boss') {
-            e.aiTimer -= dt;
-            e.x += Math.sin(angleToPlayer) * e.speed * dt;
-            e.z += Math.cos(angleToPlayer) * e.speed * dt;
-
-            if (e.mesh.userData.leftWing && e.mesh.userData.rightWing) {
-                const flap = Math.sin(nowTime * 9) * 0.35;
-                e.mesh.userData.leftWing.rotation.y = flap;
-                e.mesh.userData.rightWing.rotation.y = -flap;
-            }
-
-            if (e.aiTimer <= 0) {
-                e.pattern = (e.pattern + 1) % 3;
-                if (e.pattern === 0) {
-                    e.aiTimer = 1.65;
-                    const spreadN = e.type === 'boss' ? 2 : 1;
-                    for (let k = -spreadN; k <= spreadN; k++) {
-                        const a = angleToPlayer + k * 0.22;
-                        spawnProjectile3D(false, e.x, 1.3, e.z, Math.sin(a) * 15, Math.cos(a) * 15, 0.5, e.damage, 2.6, 0xc084fc);
-                    }
-                } else if (e.pattern === 1) {
-                    e.aiTimer = 2.0;
-                    const ringN = e.type === 'boss' ? 10 : 6;
-                    for (let k = 0; k < ringN; k++) {
-                        const a = (Math.PI * 2 / ringN) * k + nowTime;
-                        spawnProjectile3D(false, e.x, 1.2, e.z, Math.sin(a) * 12, Math.cos(a) * 12, 0.45, Math.round(e.damage * 0.8), 2.6, 0xf43f5e);
-                    }
-                } else {
-                    e.aiTimer = 1.5;
-                    e.x += Math.sin(angleToPlayer) * 3.8;
-                    e.z += Math.cos(angleToPlayer) * 3.8;
-                    spawnParticles3D(e.x, 1.2, e.z, 0xa855f7, 12, 8);
-                }
-            }
+        } else {
+            updateBoss(e, dt, dist, angleToPlayer, nowTime);
         }
 
         e.x = Math.max(-ARENA_HALF_W + 1.2, Math.min(ARENA_HALF_W - 1.2, e.x));
@@ -3456,9 +3831,10 @@ function update(dt) {
         e.mesh.position.x = e.x;
         e.mesh.position.z = e.z;
 
-        // 몸통 접촉 피해는 보스만. 일반 몬스터는 예고된 공격으로만 피해를 줌
-        if (!ENEMY_BRAINS[e.type] && player.y < 1.1 && Math.hypot(player.x - e.x, player.z - e.z) < player.radius + e.radius) {
-            damagePlayer(e.damage);
+        // 접촉 피해 없음: 모든 공격은 예고(보스 돌진은 경로 표시) 후 판정
+        if (!ENEMY_BRAINS[e.type] && !e.charge) {
+            const d = Math.hypot(player.x - e.x, player.z - e.z), min = e.radius + player.radius - 0.25;
+            if (d < min && d > 0.01 && player.dashTimer <= 0 && player.y < 1.1) movePlayer((player.x - e.x) / d * (min - d), (player.z - e.z) / d * (min - d));
         }
     }
 
@@ -3548,7 +3924,7 @@ function update(dt) {
     }
 
     // 계단 문 진입 판정
-    if (doorTransitionCooldown <= 0) {
+    if (doorTransitionCooldown <= 0 && !victoryPending) {
         if (nextDoorOpen && wave < TOTAL_STAGES && Math.abs(player.x) < 2.4 && player.z < -ARENA_HALF_D + 2.3) {
             enterStageFloor(wave + 1, true);
             return;
