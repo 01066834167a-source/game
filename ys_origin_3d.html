@@ -1568,6 +1568,8 @@ function enterStageFloor(targetFloor, enteredFromSouth) {
     player.dodgeWindow = 0;
     player.counterTimer = 0;
     hitStopTimer = 0;
+    player.lifestealTimer = 0;
+    timers = [];
 
     bossHud.classList.add('hidden');
     bossHud.classList.remove('flex');
@@ -1856,13 +1858,75 @@ const COMBO = [
 ];
 const DASH_STRIKE = { windup: 0.04, cancel: 0.14, total: 0.28, mult: 1.6, reach: 0.9, arc: 0.50, knock: 11, lunge: 1.6, stagger: 0.38, stop: 0.06, shake: 0.28, burst: 11 };
 
+// 캐릭터별 전투 프로필: 콤보 / 돌진 공격 / 대시 성능
+const HERO_COMBAT = {
+    // 유니카: 느리지만 넓고 묵직함. 3타는 전방위 내려찍기 + 충격파
+    yunica: {
+        combo: [
+            { ...COMBO[0], mult: 1.1,  arc: 0.65, knock: 7 },
+            { ...COMBO[1], mult: 1.5,  arc: 0.70, knock: 8 },
+            { ...COMBO[2], windup: 0.18, cancel: 0.31, total: 0.50, mult: 2.5, reach: 1.4, knock: 17, stagger: 0.65, stop: 0.11, shake: 0.55, shockwave: 6.8 }
+        ],
+        dash: { speed: 2.6, time: 0.18, cooldown: 0.50 }
+    },
+    // 휴고: 마탄 2연 → 2연 → 관통 대마탄
+    hugo: {
+        combo: [
+            { windup: 0.06, cancel: 0.15, total: 0.24, mult: 0.78, shot: 'twin' },
+            { windup: 0.06, cancel: 0.15, total: 0.24, mult: 0.90, shot: 'twin' },
+            { windup: 0.20, cancel: 0.32, total: 0.46, mult: 2.30, shot: 'orb', stop: 0.03, shake: 0.22 }
+        ],
+        dash: { speed: 3.2, time: 0.16, cooldown: 0.58 }
+    },
+    // 토르: 타당 2회 타격, 마지막은 적을 가르고 지나가는 돌진
+    toal: {
+        combo: [
+            { ...COMBO[0], windup: 0.05, cancel: 0.11, total: 0.22, mult: 0.55, hits: 2, lunge: 0.85, stop: 0.022 },
+            { ...COMBO[1], windup: 0.05, cancel: 0.11, total: 0.22, mult: 0.70, hits: 2, lunge: 0.90, stop: 0.026 },
+            { ...COMBO[2], windup: 0.09, cancel: 0.22, total: 0.34, mult: 1.10, hits: 2, lunge: 4.2, reach: 0.9, arc: 0.7, knock: 9, pierceLunge: true, stop: 0.05 }
+        ],
+        dash: { speed: 3.0, time: 0.17, cooldown: 0.34 }
+    }
+};
+
 function comboConfig(step) {
-    return COMBO[step - 1];
+    return HERO_COMBAT[currentHero.id].combo[step - 1];
+}
+
+// 토르: 연속 타격 중에는 공격 속도가 점점 빨라짐 (최대 25%)
+function frenzyBonus() {
+    return currentHero.id === 'toal' ? Math.min(0.25, Math.floor(combo / 5) * 0.05) : 0;
+}
+
+// 게임 시간 기준 예약 실행 (일시정지 중에는 멈추고, 층 이동 시 폐기)
+let timers = [];
+function schedule(delay, fn) { timers.push({ t: delay, fn }); }
+function updateTimers(dt) {
+    const list = timers;
+    timers = [];
+    for (const tm of list) {
+        tm.t -= dt;
+        if (tm.t > 0) timers.push(tm);
+        else if (gameState === 'PLAYING') tm.fn();
+    }
+}
+
+// 원형 범위 공격 공통 처리
+function areaStrike(x, z, radius, damage, knock, opts) {
+    spawnHitRing(x, z, (opts && opts.color) || 0xffffff, radius / 1.6);
+    let n = 0;
+    for (const enemy of enemies) {
+        if (enemy.hp > 0 && Math.hypot(enemy.x - x, enemy.z - z) < radius + enemy.radius) {
+            damageEnemy(enemy, damage, Math.atan2(enemy.x - x, enemy.z - z), knock, opts);
+            n++;
+        }
+    }
+    return n;
 }
 
 function attackSpeedMult() {
     const boost = player.boostTimer > 0 ? 0.68 : 1.0;
-    return boost * (currentHero.attackStyle === 'claw' ? 0.78 : 1.0);
+    return boost * (1 - frenzyBonus());
 }
 
 function triggerAttack() {
@@ -1887,25 +1951,9 @@ function startAttack() {
 
     const speedMult = attackSpeedMult();
 
-    // 휴고 팩트: 원거리 팩트 아이 마탄 연사!
-    if (currentHero.attackStyle === 'ranged') {
-        player.attackCooldown = 0.16 * speedMult;
-        player.slashVisualTimer = 0.12;
-        playSound('magic');
-
-        const shotDmg = Math.round(player.atk * (player.boostTimer > 0 ? 1.25 : 1.0) * consumeCounter());
-        const perpX = Math.cos(player.angle) * 0.75;
-        const perpZ = -Math.sin(player.angle) * 0.75;
-        const vx = Math.sin(player.angle) * 34;
-        const vz = Math.cos(player.angle) * 34;
-
-        spawnProjectile3D(true, player.x + perpX, 1.35, player.z + perpZ, vx, vz, 0.35, shotDmg, 0.75, 0x38bdf8);
-        spawnProjectile3D(true, player.x - perpX, 1.35, player.z - perpZ, vx, vz, 0.35, shotDmg, 0.75, 0x38bdf8);
-        return;
-    }
-
-    // 유니카 토바 & 토르 팩트: 근접 3단 콤보 (대시 직후에는 돌진 베기)
-    const dashStrike = player.dashStrikeWindow > 0;
+    // 3단 콤보 (근접 캐릭터는 대시 직후 돌진 베기)
+    const ranged = currentHero.attackStyle === 'ranged';
+    const dashStrike = !ranged && player.dashStrikeWindow > 0;
     if (dashStrike) {
         player.dashStrikeWindow = 0;
         player.dashTimer = 0;
@@ -1919,7 +1967,31 @@ function startAttack() {
         windup: cfg.windup * speedMult, cancel: cfg.cancel * speedMult, total: cfg.total * speedMult
     };
     player.comboResetTimer = player.attack.total + 0.45;
-    playSound(`slash${player.comboStep}`);
+    playSound(ranged ? 'magic' : `slash${player.comboStep}`);
+}
+
+// 휴고: 팩트 아이 마탄. 멀리서 맞힐수록 강해짐(거리 유지 보상)
+function resolveRangedShot(a) {
+    const cfg = a.cfg;
+    player.slashVisualTimer = 0.12;
+    const dmg = Math.round(player.atk * (player.boostTimer > 0 ? 1.25 : 1.0) * cfg.mult * consumeCounter());
+    const sx = Math.sin(player.angle), cz = Math.cos(player.angle);
+    if (cfg.shot === 'orb') {
+        spawnProjectile3D(true, player.x + sx * 1.3, 1.35, player.z + cz * 1.3, sx * 26, cz * 26, 0.9, dmg, 1.0, 0x818cf8,
+            { pierce: true, knock: 12, hit: { stagger: 0.45, heavy: true }, farBonus: true });
+        movePlayer(-sx * 0.8, -cz * 0.8); // 발사 반동으로 거리 벌리기
+        screenShake = Math.max(screenShake, cfg.shake);
+        playSound('skill');
+    } else {
+        const px = cz * 0.75, pz = -sx * 0.75;
+        for (const s of [1, -1]) {
+            spawnProjectile3D(true, player.x + px * s, 1.35, player.z + pz * s,
+                sx * 36 - px * s * 2.2, cz * 36 - pz * s * 2.2, 0.35, dmg, 0.75, 0x38bdf8,
+                { homing: 4.0, knock: 3.5, hit: { stagger: 0.14 }, farBonus: true });
+        }
+        playSound('magic');
+    }
+    player.mp = Math.min(player.maxMp, player.mp + 1.5);
 }
 
 function updateAttack(dt) {
@@ -1933,19 +2005,20 @@ function updateAttack(dt) {
     a.t += dt;
 
     // 선딜 동안 전진하며 파고들되, 적 몸을 뚫고 지나가지는 않음
-    if (before < a.windup) {
+    if (before < a.windup && a.cfg.lunge) {
         const frac = (Math.min(a.t, a.windup) - before) / a.windup;
         const blocked = enemies.some(e => {
             const dx = e.x - player.x, dz = e.z - player.z;
             return Math.hypot(dx, dz) < e.radius + player.radius + 0.25 &&
                 Math.abs(normalizeAngle(Math.atan2(dx, dz) - player.angle)) < 1.0;
         });
-        if (!blocked) movePlayer(Math.sin(player.angle) * a.cfg.lunge * frac, Math.cos(player.angle) * a.cfg.lunge * frac);
+        if (!blocked || a.cfg.pierceLunge) movePlayer(Math.sin(player.angle) * a.cfg.lunge * frac, Math.cos(player.angle) * a.cfg.lunge * frac);
     }
 
     if (!a.hitDone && a.t >= a.windup) {
         a.hitDone = true;
-        resolveMeleeHit(a);
+        if (a.cfg.shot) resolveRangedShot(a);
+        else resolveMeleeHit(a);
     }
 
     if (player.attack !== a) return;
@@ -1977,6 +2050,20 @@ function movePlayer(mx, mz) {
     player.z = Math.max(-ARENA_HALF_D + 1.1, Math.min(ARENA_HALF_D - 1.1, player.z + mz));
 }
 
+function steerProjectile(p, dt) {
+    const cur = Math.atan2(p.vx, p.vz);
+    let best = null, bestDiff = 0.6;
+    for (const e of enemies) {
+        const diff = normalizeAngle(Math.atan2(e.x - p.x, e.z - p.z) - cur);
+        if (Math.abs(diff) < Math.abs(bestDiff) && !p.hitSet.has(e)) { best = e; bestDiff = diff; }
+    }
+    if (!best) return;
+    const turn = Math.max(-p.homing * dt, Math.min(p.homing * dt, bestDiff));
+    const speed = Math.hypot(p.vx, p.vz);
+    p.vx = Math.sin(cur + turn) * speed;
+    p.vz = Math.cos(cur + turn) * speed;
+}
+
 function consumeCounter() {
     if (player.counterTimer > 0) {
         player.counterTimer = 0;
@@ -1987,6 +2074,15 @@ function consumeCounter() {
 }
 
 function resolveMeleeHit(a) {
+    // 돌진 마무리는 지나온 경로 전체를 벰
+    const sweep = a.cfg.pierceLunge ? a.cfg.lunge : 0;
+    const ox = player.x - Math.sin(player.angle) * sweep, oz = player.z - Math.cos(player.angle) * sweep;
+    if (a.cfg.shockwave) {
+        // 유니카 3타: 헛쳐도 충격파가 퍼지며 가까운 탄을 지움
+        spawnHitRing(player.x, player.z, 0xfb7185, a.cfg.shockwave / 1.6);
+        clearEnemyProjectiles(a.cfg.shockwave * 0.7);
+        screenShake = Math.max(screenShake, 0.3);
+    }
     const cfg = a.cfg;
     const finisher = a.step === 3;
     player.slashVisualTimer = 0.14;
@@ -2006,6 +2102,11 @@ function resolveMeleeHit(a) {
         const dx = enemy.x - player.x;
         const dz = enemy.z - player.z;
         const dist = Math.hypot(dx, dz);
+        if (sweep) {
+            const along = Math.max(0, Math.min(sweep, (enemy.x - ox) * Math.sin(player.angle) + (enemy.z - oz) * Math.cos(player.angle)));
+            if (Math.hypot(enemy.x - ox - Math.sin(player.angle) * along, enemy.z - oz - Math.cos(player.angle) * along) < enemy.radius + 1.6) return true;
+        }
+        if (a.cfg.shockwave && dist < a.cfg.shockwave + enemy.radius) return true;
         if (dist > reach + enemy.radius) return false;
         // 몸이 겹칠 만큼 가까우면 방향과 무관하게 적중
         if (dist < enemy.radius + player.radius) return true;
@@ -2014,10 +2115,14 @@ function resolveMeleeHit(a) {
     if (!targets.length) return;
 
     const damage = Math.round(baseAtk * cfg.mult * consumeCounter());
-    for (const enemy of targets) {
-        const dir = finisher ? Math.atan2(enemy.x - player.x, enemy.z - player.z) : player.angle;
-        damageEnemy(enemy, damage, dir, cfg.knock, { stagger: cfg.stagger, shake: cfg.shake, heavy: finisher || a.dashStrike });
-    }
+    const strike = (list) => {
+        for (const enemy of list) {
+            const dir = finisher ? Math.atan2(enemy.x - player.x, enemy.z - player.z) : player.angle;
+            damageEnemy(enemy, damage, dir, cfg.knock, { stagger: cfg.stagger, shake: cfg.shake, heavy: finisher || a.dashStrike });
+        }
+    };
+    strike(targets);
+    for (let k = 1; k < (cfg.hits || 1); k++) schedule(0.055 * k, () => strike(targets));
 
     player.mp = Math.min(player.maxMp, player.mp + 7);
     if (player.boostTimer <= 0) player.burst = Math.min(100, player.burst + cfg.burst);
@@ -2041,8 +2146,10 @@ function triggerDash() {
     const input = readMoveInput();
     if (input) player.angle = Math.atan2(input.x, input.z);
 
-    player.dashTimer = 0.18;
-    player.dashCooldown = 0.46;
+    const dashCfg = HERO_COMBAT[currentHero.id].dash;
+    player.dashTimer = dashCfg.time;
+    player.dashCooldown = dashCfg.cooldown;
+    player.dashSpeed = dashCfg.speed;
     player.dashStrikeWindow = 0.34;
     player.dodgeWindow = 0.26;
     player.invulnTimer = Math.max(player.invulnTimer, 0.28);
@@ -2079,58 +2186,165 @@ function triggerSkill() {
     playSound('skill');
     screenShake = 0.35;
 
-    if (sk.id === 'fire') {
-        const spread = currentHero.id === 'hugo' ? [-0.24, -0.12, 0, 0.12, 0.24] : [-0.16, 0, 0.16];
-        const skillDmg = Math.round(player.atk * (currentHero.id === 'hugo' ? 1.45 : 1.9));
-        const col = currentHero.id === 'toal' ? 0xa855f7 : 0xf97316;
-        spread.forEach(offset => {
-            const a = player.angle + offset;
-            spawnProjectile3D(true, player.x + Math.sin(a) * 1.2, 1.3, player.z + Math.cos(a) * 1.2, Math.sin(a) * 30, Math.cos(a) * 30, 0.65, skillDmg, 0.85, col);
-        });
-    } else if (sk.id === 'wind') {
-        if (currentHero.id === 'hugo') {
-            // 휴고 결계 배리어
-            player.invulnTimer = 2.6;
-            player.hp = Math.min(player.maxHp, player.hp + 35);
-            addFloatingText(player.x, 2.3, player.z, '결계 배리어! HP+35', '#38bdf8');
-        } else {
-            // 유니카 선풍의 도끼 / 토르 질풍난무
-            player.whirlwindTimer = 0.45;
-            const windDmg = Math.round(player.atk * 2.25);
-            spawnParticles3D(player.x, 1.2, player.z, 0x4ade80, 24, 12);
-            addFloatingText(player.x, 2.3, player.z, `${sk.name}!`, '#4ade80');
+    SKILL_ACTIONS[currentHero.id][sk.id](sk);
+}
 
-            for (let i = projectiles.length - 1; i >= 0; i--) {
-                if (!projectiles[i].fromPlayer && Math.hypot(projectiles[i].x - player.x, projectiles[i].z - player.z) < 9.5) {
-                    spawnParticles3D(projectiles[i].x, 1.0, projectiles[i].z, 0x86efac, 5, 4);
-                    scene.remove(projectiles[i].mesh);
-                    projectiles.splice(i, 1);
-                }
-            }
-            for (const enemy of enemies) {
-                const dx = enemy.x - player.x;
-                const dz = enemy.z - player.z;
-                if (Math.hypot(dx, dz) < 8.5 + enemy.radius) {
-                    damageEnemy(enemy, windDmg, Math.atan2(dx, dz), 16);
-                }
-            }
-        }
-    } else if (sk.id === 'thunder') {
-        player.invulnTimer = 2.4;
-        player.hp = Math.min(player.maxHp, player.hp + 30);
-        const thunderDmg = Math.round(player.atk * 2.1);
-        spawnParticles3D(player.x, 1.3, player.z, 0xfbbf24, 22, 13);
-        addFloatingText(player.x, 2.3, player.z, `${sk.name}!`, '#fde047');
-
-        for (const enemy of enemies) {
-            const dx = enemy.x - player.x;
-            const dz = enemy.z - player.z;
-            if (Math.hypot(dx, dz) < 7.5 + enemy.radius) {
-                damageEnemy(enemy, thunderDmg, Math.atan2(dx, dz), 14);
-            }
+function clearEnemyProjectiles(radius) {
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+        const p = projectiles[i];
+        if (!p.fromPlayer && Math.hypot(p.x - player.x, p.z - player.z) < radius) {
+            spawnParticles3D(p.x, 1.0, p.z, 0x86efac, 4, 4);
+            scene.remove(p.mesh);
+            projectiles.splice(i, 1);
         }
     }
 }
+
+function fanShot(offsets, speed, radius, dmg, life, color, opts) {
+    offsets.forEach(off => {
+        const a = player.angle + off;
+        spawnProjectile3D(true, player.x + Math.sin(a) * 1.2, 1.3, player.z + Math.cos(a) * 1.2, Math.sin(a) * speed, Math.cos(a) * speed, radius, dmg, life, color, opts);
+    });
+}
+
+const SKILL_ACTIONS = {
+    yunica: {
+        // 홍련의검: 관통하는 대형 화염 검기를 3번 연속 방출
+        fire(sk) {
+            for (let k = 0; k < 3; k++) {
+                const cast = () => fanShot([0], 27, 1.15, Math.round(player.atk * 1.5), 0.6, 0xf97316, { pierce: true, knock: 10, hit: { stagger: 0.4, heavy: true } });
+                if (k === 0) cast(); else schedule(0.13 * k, cast);
+            }
+        },
+        // 선풍의도끼: 크게 한 번 휘둘러 적을 날려버리고 탄막 제거
+        wind(sk) {
+            player.whirlwindTimer = 0.45;
+            clearEnemyProjectiles(9.5);
+            spawnParticles3D(player.x, 1.2, player.z, 0x4ade80, 24, 12);
+            addFloatingText(player.x, 2.3, player.z, `${sk.name}!`, '#4ade80');
+            areaStrike(player.x, player.z, 8.5, Math.round(player.atk * 2.4), 18, { color: 0x4ade80, stagger: 0.6, heavy: true });
+        },
+        // 금강의사자: 번개를 두른 무적 돌진
+        thunder(sk) {
+            player.invulnTimer = 1.6;
+            player.dashTimer = 0.34;
+            player.dashSpeed = 2.8;
+            player.dashDirX = Math.sin(player.angle);
+            player.dashDirZ = Math.cos(player.angle);
+            player.hp = Math.min(player.maxHp, player.hp + 30);
+            addFloatingText(player.x, 2.3, player.z, `${sk.name}!`, '#fde047');
+            const struck = new Set();
+            for (let k = 0; k <= 6; k++) {
+                schedule(0.001 + 0.055 * k, () => {
+                    spawnParticles3D(player.x, 1.2, player.z, 0xfbbf24, 8, 9);
+                    for (const e of enemies) {
+                        if (!struck.has(e) && Math.hypot(e.x - player.x, e.z - player.z) < 3.8 + e.radius) {
+                            struck.add(e);
+                            damageEnemy(e, Math.round(player.atk * 2.8), player.angle, 15, { stagger: 0.55, heavy: true });
+                        }
+                    }
+                });
+            }
+        }
+    },
+    hugo: {
+        // 폭염의마탄: 관통 화염구 5연발
+        fire() {
+            fanShot([-0.24, -0.12, 0, 0.12, 0.24], 30, 0.65, Math.round(player.atk * 1.45), 0.85, 0xf97316, { pierce: true, knock: 6 });
+        },
+        // 결계배리어: 회복 + 무적, 주변 적을 밀어내고 탄 제거
+        wind() {
+            player.invulnTimer = 2.6;
+            player.hp = Math.min(player.maxHp, player.hp + 35);
+            clearEnemyProjectiles(8);
+            areaStrike(player.x, player.z, 5.0, Math.round(player.atk * 0.8), 22, { color: 0x38bdf8, stagger: 0.7, heavy: true });
+            addFloatingText(player.x, 2.3, player.z, '결계 배리어! HP+35', '#38bdf8');
+        },
+        // 뇌전의기둥: 가까운 적들의 발밑에 시간차 낙뢰
+        thunder(sk) {
+            addFloatingText(player.x, 2.3, player.z, `${sk.name}!`, '#fde047');
+            const near = [...enemies].sort((a, b) => Math.hypot(a.x - player.x, a.z - player.z) - Math.hypot(b.x - player.x, b.z - player.z)).slice(0, 5);
+            near.forEach((target, i) => schedule(0.12 + i * 0.1, () => {
+                spawnParticles3D(target.x, 3.0, target.z, 0xfde047, 16, 10);
+                areaStrike(target.x, target.z, 2.8, Math.round(player.atk * 2.3), 8, { color: 0xfde047, stagger: 0.5, heavy: true });
+            }));
+        }
+    },
+    toal: {
+        // 암흑충격파: 3갈래 검기와 함께 앞으로 돌진
+        fire() {
+            fanShot([-0.2, 0, 0.2], 32, 0.65, Math.round(player.atk * 1.7), 0.8, 0xa855f7, { pierce: true, knock: 7 });
+            player.dashTimer = 0.14;
+            player.dashSpeed = 2.4;
+            player.dashDirX = Math.sin(player.angle);
+            player.dashDirZ = Math.cos(player.angle);
+            player.invulnTimer = Math.max(player.invulnTimer, 0.3);
+        },
+        // 질풍난무: 이동하며 6연속 회전 할퀴기
+        wind(sk) {
+            player.whirlwindTimer = 0.7;
+            player.invulnTimer = Math.max(player.invulnTimer, 0.5);
+            addFloatingText(player.x, 2.3, player.z, `${sk.name}!`, '#4ade80');
+            for (let k = 0; k < 6; k++) {
+                schedule(0.001 + 0.1 * k, () => {
+                    clearEnemyProjectiles(4.5);
+                    areaStrike(player.x, player.z, 4.8, Math.round(player.atk * 0.55), k === 5 ? 14 : 2, { color: 0xc084fc, stagger: 0.2, heavy: k === 5 });
+                });
+            }
+        },
+        // 마인의가호: 6초간 타격 시 흡혈 + 짧은 무적
+        thunder(sk) {
+            player.lifestealTimer = 6.0;
+            player.invulnTimer = 1.4;
+            player.hp = Math.min(player.maxHp, player.hp + 20);
+            addFloatingText(player.x, 2.3, player.z, `${sk.name}! 6초 흡혈`, '#e879f9');
+            areaStrike(player.x, player.z, 5.5, Math.round(player.atk * 1.4), 14, { color: 0xa855f7, stagger: 0.5, heavy: true });
+        }
+    }
+};
+
+function radialShots(count, phase, speed, radius, dmg, color, opts) {
+    for (let i = 0; i < count; i++) {
+        const a = (Math.PI * 2 / count) * i + phase;
+        spawnProjectile3D(true, player.x + Math.sin(a) * 1.4, 1.2, player.z + Math.cos(a) * 1.4, Math.sin(a) * speed, Math.cos(a) * speed, radius, dmg, 0.9, color, opts);
+    }
+}
+
+const EX_ACTIONS = {
+    // 유니카: 전 화면을 가르는 거대한 2연격
+    yunica() {
+        const dmg = Math.round(player.atk * 3.2);
+        for (const e of [...enemies]) damageEnemy(e, dmg, Math.atan2(e.x - player.x, e.z - player.z), 18, { stagger: 0.9, heavy: true });
+        radialShots(12, 0, 30, 1.0, Math.round(player.atk * 2.0), 0xf97316, { pierce: true });
+        schedule(0.42, () => {
+            screenShake = 0.9;
+            areaStrike(player.x, player.z, 16, Math.round(player.atk * 3.6), 20, { color: 0xf97316, stagger: 0.8, heavy: true });
+        });
+    },
+    // 휴고: 5파의 마탄 포격
+    hugo() {
+        for (let w = 0; w < 5; w++) {
+            schedule(0.001 + 0.2 * w, () => {
+                radialShots(14, w * 0.22, 34, 0.7, Math.round(player.atk * 1.6), 0x38bdf8, { homing: 5.0 });
+                playSound('magic');
+            });
+        }
+        for (const e of [...enemies]) damageEnemy(e, Math.round(player.atk * 2.4), Math.atan2(e.x - player.x, e.z - player.z), 12, { stagger: 0.8, heavy: true });
+    },
+    // 토르: 적 사이를 오가는 12연 난무
+    toal() {
+        for (let k = 0; k < 12; k++) {
+            schedule(0.001 + 0.09 * k, () => {
+                const alive = enemies.filter(e => e.hp > 0);
+                if (!alive.length) return;
+                const e = alive[k % alive.length];
+                spawnParticles3D(e.x, 1.2, e.z, 0xc084fc, 10, 9);
+                areaStrike(e.x, e.z, 3.0, Math.round(player.atk * (k === 11 ? 2.4 : 0.85)), k === 11 ? 18 : 2, { color: 0xc084fc, stagger: 0.3, heavy: k === 11 });
+                playSound('slash3');
+            });
+        }
+    }
+};
 
 // <이스 오리진> 2단계 부스트(BOOST) & EX 스페셜 아츠!
 function triggerBoostOrEx() {
@@ -2157,39 +2371,24 @@ function triggerBoostOrEx() {
 
         addFloatingText(player.x, 2.7, player.z, currentHero.exName, '#f0abfc');
 
-        for (let i = projectiles.length - 1; i >= 0; i--) {
-            if (!projectiles[i].fromPlayer) {
-                scene.remove(projectiles[i].mesh);
-                projectiles.splice(i, 1);
-            }
-        }
-
-        const ultProjDmg = Math.round(player.atk * 2.6);
-        const projCol = currentHero.id === 'hugo' ? 0x38bdf8 : (currentHero.id === 'toal' ? 0xc084fc : 0xf97316);
-        for (let i = 0; i < 16; i++) {
-            const a = (Math.PI * 2 / 16) * i;
-            spawnProjectile3D(true, player.x + Math.sin(a) * 1.4, 1.2, player.z + Math.cos(a) * 1.4, Math.sin(a) * 34, Math.cos(a) * 34, 0.85, ultProjDmg, 0.9, projCol);
-        }
-
-        const screenSlashDmg = Math.round(player.atk * 4.8);
-        for (const enemy of enemies) {
-            const ang = Math.atan2(enemy.x - player.x, enemy.z - player.z);
-            damageEnemy(enemy, screenSlashDmg, ang, 18);
-        }
+        clearEnemyProjectiles(Infinity);
+        EX_ACTIONS[currentHero.id]();
         return;
     }
 
     addFloatingText(player.x, 2.2, player.z, 'BOOST 게이지 부족!', '#f59e0b');
 }
 
-function spawnProjectile3D(fromPlayer, x, y, z, vx, vz, radius, damage, life, colorHex) {
+function spawnProjectile3D(fromPlayer, x, y, z, vx, vz, radius, damage, life, colorHex, opts = {}) {
     const geo = new THREE.SphereGeometry(radius, 12, 12);
     const mat = new THREE.MeshBasicMaterial({ color: colorHex });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(x, y, z);
     scene.add(mesh);
 
-    projectiles.push({ fromPlayer, x, y, z, vx, vz, radius, damage, life, colorHex, mesh });
+    const p = { fromPlayer, x, y, z, vx, vz, radius, damage, life, colorHex, mesh, ...opts, age: 0, hitSet: new Set() };
+    projectiles.push(p);
+    return p;
 }
 
 // ==========================================
@@ -2319,6 +2518,10 @@ function damageEnemy(enemy, amount, hitAngle, knockForce, opts = {}) {
             enemy.staggerTimer = Math.max(enemy.staggerTimer || 0, stagger);
             onEnemyStaggered(enemy);
         }
+    }
+
+    if (player.lifestealTimer > 0) {
+        player.hp = Math.min(player.maxHp, player.hp + Math.max(1, Math.round(player.maxHp * 0.012)));
     }
 
     combo++;
@@ -2497,6 +2700,8 @@ function update(dt) {
     if (player.dashStrikeWindow > 0) player.dashStrikeWindow -= dt;
     if (player.dodgeWindow > 0) player.dodgeWindow -= dt;
     if (player.counterTimer > 0) player.counterTimer -= dt;
+    if (player.lifestealTimer > 0) player.lifestealTimer -= dt;
+    updateTimers(dt);
     updateAttack(dt);
     updateHitRings(dt);
     if (player.invulnTimer > 0) player.invulnTimer -= dt;
@@ -2525,8 +2730,8 @@ function update(dt) {
 
     if (player.dashTimer > 0) {
         player.dashTimer -= dt;
-        player.x += player.dashDirX * (player.speed * 2.6) * dt;
-        player.z += player.dashDirZ * (player.speed * 2.6) * dt;
+        movePlayer(player.dashDirX * player.speed * (player.dashSpeed || 2.6) * dt,
+                   player.dashDirZ * player.speed * (player.dashSpeed || 2.6) * dt);
         isMoving = true;
     } else {
         const input = readMoveInput();
@@ -2534,7 +2739,9 @@ function update(dt) {
             isMoving = true;
             // 공격 모션 중에는 발이 묶이고, 타격 이후에는 천천히 움직일 수 있음
             const a = player.attack;
-            const slow = a ? (a.hitDone ? 0.35 : 0.0) : 1.0;
+            // 휴고는 영창하면서도 이동 가능
+            const casting = currentHero.attackStyle === 'ranged';
+            const slow = a ? (casting ? 0.6 : (a.hitDone ? 0.35 : 0.0)) : 1.0;
             movePlayer(input.x * player.speed * moveMult * slow * dt, input.z * player.speed * moveMult * slow * dt);
             if (!a) player.angle = Math.atan2(input.x, input.z);
         }
@@ -2610,17 +2817,24 @@ function update(dt) {
     // 투사체 업데이트
     for (let i = projectiles.length - 1; i >= 0; i--) {
         const p = projectiles[i];
+        if (p.homing) steerProjectile(p, dt);
         p.x += p.vx * dt;
         p.z += p.vz * dt;
         p.life -= dt;
+        p.age += dt;
         p.mesh.position.set(p.x, p.y, p.z);
 
         if (p.fromPlayer) {
             for (const enemy of enemies) {
+                if (enemy.hp <= 0 || p.hitSet.has(enemy)) continue;
                 if (Math.hypot(enemy.x - p.x, enemy.z - p.z) < enemy.radius + p.radius) {
-                    damageEnemy(enemy, p.damage, Math.atan2(p.vx, p.vz), 5);
-                    p.life = 0;
-                    break;
+                    p.hitSet.add(enemy);
+                    const far = p.farBonus && p.age > 0.17; // 약 6m 이상
+                    damageEnemy(enemy, Math.round(p.damage * (far ? 1.25 : 1)), Math.atan2(p.vx, p.vz), p.knock ?? 5, p.hit || {});
+                    if (!p.pierce) {
+                        p.life = 0;
+                        break;
+                    }
                 }
             }
         } else {
@@ -2895,6 +3109,28 @@ function applyAttackPose(a) {
     const arm = playerMesh.userData.armR;
     const side = a.step === 2 ? -1 : 1;
     const ease = v => v * v * (3 - 2 * v);
+    const left = playerMesh.userData.armL;
+    if (currentHero.id === 'hugo') {
+        // 지팡이를 앞으로 겨누고, 대마탄은 두 팔로 모았다가 밀어냄
+        const k = a.t < a.windup ? ease(a.t / a.windup) : 1 - ease(Math.max(0, (a.t - a.cancel) / Math.max(0.01, a.total - a.cancel)));
+        arm.rotation.x = -1.4 * k;
+        arm.rotation.y = a.step === 3 ? 0 : side * 0.25 * k;
+        if (left && a.step === 3) left.rotation.x = -1.4 * k;
+        playerMesh.rotation.y = player.angle;
+        playerMesh.rotation.x = a.step === 3 ? (a.t < a.windup ? -0.12 * k : 0.1 * k) : 0;
+        return;
+    }
+    if (currentHero.id === 'toal') {
+        // 양팔을 번갈아 두 번씩 할퀴고, 3타는 낮게 숙여 돌진
+        const phase = Math.min(1, a.t / Math.max(0.01, a.cancel));
+        const flurry = Math.sin(phase * Math.PI * 3);
+        arm.rotation.x = -1.2 + flurry * 0.9;
+        arm.rotation.y = side * flurry * 0.8;
+        if (left) left.rotation.x = -1.2 - flurry * 0.9;
+        playerMesh.rotation.y = player.angle + (a.step === 3 ? 0 : side * flurry * 0.2);
+        playerMesh.rotation.x = a.step === 3 || a.dashStrike ? 0.38 * Math.sin(Math.min(1, a.t / a.total) * Math.PI) : 0.08;
+        return;
+    }
     if (a.t < a.windup) {
         const k = ease(a.t / a.windup);
         arm.rotation.x = -2.0 * k;
