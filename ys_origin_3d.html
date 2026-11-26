@@ -1492,6 +1492,8 @@ const player = {
     dashCooldown: 0,
     dashDirX: 0,
     dashDirZ: 0,
+    velX: 0,
+    velZ: 0,
     invulnTimer: 0,
     attack: null,
     attackBuffer: 0,
@@ -1570,6 +1572,9 @@ function enterStageFloor(targetFloor, enteredFromSouth) {
     hitStopTimer = 0;
     player.lifestealTimer = 0;
     timers = [];
+    [...telegraphs].forEach(removeTelegraph);
+    player.velX = 0;
+    player.velZ = 0;
 
     bossHud.classList.add('hidden');
     bossHud.classList.remove('flex');
@@ -2442,6 +2447,7 @@ function spawnEnemy(type) {
             colorHex: 0xec4899, aiTimer: 1.5, knockX: 0, knockZ: 0, flashTimer: 0, mesh
         });
     }
+    initEnemyAI(enemies[enemies.length - 1]);
 }
 
 function spawnAreaBoss(floor) {
@@ -2498,6 +2504,261 @@ function spawnWaveEnemies(w) {
 }
 
 // ==========================================
+// 7-1. 공격 예고(텔레그래프) & 몬스터 AI
+// ==========================================
+let telegraphs = [];
+
+// shape: {type:'circle',x,z,r} | {type:'sector',x,z,angle,r,half} | {type:'line',x,z,angle,len,width}
+function createTelegraph(shape, duration, color = 0xef4444) {
+    const mat = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.2, depthWrite: false });
+    let mesh;
+    if (shape.type === 'line') {
+        mesh = new THREE.Group();
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(shape.width, 0.04, shape.len), mat);
+        bar.position.set(0, 0, shape.len / 2);
+        mesh.add(bar);
+        mesh.rotation.y = shape.angle;
+        mesh.userData.geo = bar.geometry;
+    } else {
+        const geo = shape.type === 'sector'
+            ? new THREE.RingGeometry(0.2, shape.r, 24, 1, shape.angle - Math.PI / 2 - shape.half, shape.half * 2)
+            : new THREE.RingGeometry(0.05, shape.r, 32);
+        mesh = new THREE.Mesh(geo, mat);
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.userData.geo = geo;
+    }
+    mesh.position.set(shape.x, 0.09, shape.z);
+    scene.add(mesh);
+    const tg = { shape, mesh, mat, t: 0, duration, dead: false };
+    telegraphs.push(tg);
+    return tg;
+}
+
+function removeTelegraph(tg) {
+    if (!tg || tg.dead) return;
+    tg.dead = true;
+    scene.remove(tg.mesh);
+    if (tg.mesh.userData.geo && tg.mesh.userData.geo.dispose) tg.mesh.userData.geo.dispose();
+    tg.mat.dispose();
+    const i = telegraphs.indexOf(tg);
+    if (i >= 0) telegraphs.splice(i, 1);
+}
+
+// 시간이 찰수록 진해지고, 발동 직전에는 깜빡임
+function updateTelegraphs(dt) {
+    for (const tg of telegraphs) {
+        tg.t += dt;
+        const k = Math.min(1, tg.t / tg.duration);
+        tg.mat.opacity = k > 0.8 && Math.floor(tg.t * 24) % 2 === 0 ? 0.75 : 0.16 + 0.4 * k;
+    }
+}
+
+function shapeHits(s, px, pz, pr) {
+    const dx = px - s.x, dz = pz - s.z;
+    if (s.type === 'circle') return Math.hypot(dx, dz) < s.r + pr * 0.5;
+    if (s.type === 'sector') {
+        const d = Math.hypot(dx, dz);
+        return d < s.r + pr * 0.5 && (d < 1.2 || Math.abs(normalizeAngle(Math.atan2(dx, dz) - s.angle)) <= s.half);
+    }
+    const along = dx * Math.sin(s.angle) + dz * Math.cos(s.angle);
+    const side = Math.abs(dx * Math.cos(s.angle) - dz * Math.sin(s.angle));
+    return along > -pr && along < s.len + pr * 0.5 && side < s.width / 2 + pr * 0.5;
+}
+
+function strikePlayerInShape(shape, damage) {
+    if (player.y < 1.1 && shapeHits(shape, player.x, player.z, player.radius)) damagePlayer(damage);
+}
+
+function clearEnemyTelegraph(e) {
+    if (e.tele) {
+        removeTelegraph(e.tele);
+        e.tele = null;
+    }
+}
+
+function moveEnemy(e, mx, mz) {
+    e.x = Math.max(-ARENA_HALF_W + 1.2, Math.min(ARENA_HALF_W - 1.2, e.x + mx));
+    e.z = Math.max(-ARENA_HALF_D + 1.2, Math.min(ARENA_HALF_D - 1.2, e.z + mz));
+}
+
+function hasLineOfSight(x1, z1, x2, z2) { return true; }
+function chaseAngle(e) { return Math.atan2(player.x - e.x, player.z - e.z); }
+
+// 동시에 공격을 준비하는 적 수를 제한해 회피 여지를 남김
+function canStartAttack() {
+    return enemies.filter(e => e.ai === 'windup' || e.ai === 'strike').length < 3;
+}
+
+function setAI(e, state, time) {
+    e.ai = state;
+    e.stateT = time;
+}
+
+const ENEMY_BRAINS = {
+    // 슬라임: 통통 접근 → 착지 지점을 예고하고 도약 내려찍기
+    slime(e, dt, dist, ang, now) {
+        if (e.ai === 'chase') {
+            const hop = 0.55 + Math.max(0, Math.sin(now * 7 + e.phase)) * 0.9;
+            if (dist > 2.2) moveEnemy(e, Math.sin(chaseAngle(e)) * e.speed * hop * dt, Math.cos(chaseAngle(e)) * e.speed * hop * dt);
+            if (dist < 6.5 && e.cd <= 0 && canStartAttack() && hasLineOfSight(e.x, e.z, player.x, player.z)) {
+                const d = Math.min(6.5, dist);
+                e.fromX = e.x; e.fromZ = e.z;
+                e.toX = Math.max(-ARENA_HALF_W + 1.3, Math.min(ARENA_HALF_W - 1.3, e.x + Math.sin(ang) * d));
+                e.toZ = Math.max(-ARENA_HALF_D + 1.3, Math.min(ARENA_HALF_D - 1.3, e.z + Math.cos(ang) * d));
+                e.tele = createTelegraph({ type: 'circle', x: e.toX, z: e.toZ, r: 2.0 }, 0.95, 0x34d399);
+                setAI(e, 'windup', 0.55);
+            }
+        } else if (e.ai === 'windup') {
+            const k = 1 - Math.max(0, e.stateT) / 0.55;
+            e.mesh.scale.set(1 + 0.35 * k, 1 - 0.4 * k, 1 + 0.35 * k);
+            if (e.stateT <= 0) setAI(e, 'strike', 0.4);
+        } else if (e.ai === 'strike') {
+            const k = 1 - Math.max(0, e.stateT) / 0.4;
+            e.x = e.fromX + (e.toX - e.fromX) * k;
+            e.z = e.fromZ + (e.toZ - e.fromZ) * k;
+            e.mesh.position.y = Math.sin(k * Math.PI) * 2.4;
+            if (e.stateT <= 0) {
+                if (e.tele) strikePlayerInShape(e.tele.shape, e.damage);
+                clearEnemyTelegraph(e);
+                spawnHitRing(e.x, e.z, 0x34d399, 1.2);
+                e.cd = 1.5 + Math.random();
+                setAI(e, 'recover', 0.6);
+            }
+        }
+    },
+    // 기사: 근거리에서는 부채꼴 베기, 중거리에서는 직선 돌격
+    knight(e, dt, dist, ang) {
+        const arm = e.mesh.userData.legL;
+        if (e.ai === 'chase') {
+            if (dist > 2.6) moveEnemy(e, Math.sin(chaseAngle(e)) * e.speed * dt, Math.cos(chaseAngle(e)) * e.speed * dt);
+            if (e.cd <= 0 && canStartAttack() && hasLineOfSight(e.x, e.z, player.x, player.z)) {
+                if (dist < 3.8) {
+                    e.move = 'cleave';
+                    e.aim = ang;
+                    e.tele = createTelegraph({ type: 'sector', x: e.x, z: e.z, angle: ang, r: 4.3, half: 0.95 }, 0.7);
+                    setAI(e, 'windup', 0.7);
+                } else if (dist > 6 && dist < 13) {
+                    e.move = 'charge';
+                    e.aim = ang;
+                    e.tele = createTelegraph({ type: 'line', x: e.x, z: e.z, angle: ang, len: 11, width: 2.2 }, 0.85, 0xf59e0b);
+                    setAI(e, 'windup', 0.85);
+                }
+            }
+        } else if (e.ai === 'windup') {
+            e.mesh.rotation.y = e.aim;
+            e.mesh.rotation.x = -0.22;
+            if (e.stateT <= 0) {
+                if (e.move === 'cleave') {
+                    if (e.tele) strikePlayerInShape(e.tele.shape, e.damage);
+                    spawnHitRing(e.x + Math.sin(e.aim) * 2.4, e.z + Math.cos(e.aim) * 2.4, 0x818cf8, 1.6);
+                    setAI(e, 'strike', 0.15);
+                } else {
+                    e.chargeHit = false;
+                    setAI(e, 'strike', 0.45);
+                }
+                clearEnemyTelegraph(e);
+            }
+        } else if (e.ai === 'strike') {
+            e.mesh.rotation.y = e.aim;
+            e.mesh.rotation.x = 0.3;
+            if (e.move === 'charge') {
+                moveEnemy(e, Math.sin(e.aim) * 24 * dt, Math.cos(e.aim) * 24 * dt);
+                if (!e.chargeHit && player.y < 1.1 && Math.hypot(player.x - e.x, player.z - e.z) < e.radius + player.radius + 0.2) {
+                    e.chargeHit = true;
+                    damagePlayer(Math.round(e.damage * 1.15));
+                }
+            }
+            if (e.stateT <= 0) {
+                e.cd = 1.3 + Math.random();
+                setAI(e, 'recover', e.move === 'charge' ? 0.85 : 0.6); // 돌격 후에는 큰 빈틈
+            }
+        }
+    },
+    // 마도사: 거리 유지 + 좌우 이동, 예측 사격 / 3갈래 / 가까우면 도약 후퇴
+    mage(e, dt, dist, ang, now) {
+        if (e.mesh.userData.orb) e.mesh.userData.orb.position.y = 1.75 + Math.sin(now * 6 + e.phase) * 0.2;
+        if (e.ai === 'chase') {
+            const sight = hasLineOfSight(e.x, e.z, player.x, player.z);
+            const toward = !sight || dist > 12 ? 1 : (dist < 8 ? -0.85 : 0);
+            const a = sight ? ang : chaseAngle(e);
+            const strafe = toward === 0 ? 0.55 * e.strafeDir : 0;
+            moveEnemy(e, (Math.sin(a) * toward + Math.cos(a) * strafe) * e.speed * dt,
+                         (Math.cos(a) * toward - Math.sin(a) * strafe) * e.speed * dt);
+            if (Math.random() < dt * 0.5) e.strafeDir *= -1;
+
+            e.blinkCd -= dt;
+            if (dist < 4.5 && e.blinkCd <= 0) {
+                spawnParticles3D(e.x, 1.2, e.z, 0xf472b6, 10, 7);
+                const side = ang + Math.PI + (Math.random() - 0.5) * 1.4;
+                moveEnemy(e, Math.sin(side) * 6, Math.cos(side) * 6);
+                e.blinkCd = 4.5;
+            }
+            if (e.cd <= 0 && dist < 17 && sight && canStartAttack()) {
+                e.move = Math.random() < 0.4 ? 'fan' : 'snipe';
+                // 이동 중인 플레이어의 진행 방향을 일부 예측
+                const lead = Math.min(1, dist / 13) * 0.6;
+                e.aim = Math.atan2(player.x + player.velX * lead - e.x, player.z + player.velZ * lead - e.z);
+                const half = e.move === 'fan' ? 0.42 : 0.07;
+                e.tele = createTelegraph({ type: 'sector', x: e.x, z: e.z, angle: e.aim, r: Math.min(15, dist + 3), half }, 0.75, 0xec4899);
+                setAI(e, 'windup', 0.75);
+            }
+        } else if (e.ai === 'windup') {
+            e.mesh.rotation.y = e.aim;
+            if (e.mesh.userData.orb) e.mesh.userData.orb.position.y += 0.4;
+            if (e.stateT <= 0) {
+                const offs = e.move === 'fan' ? [-0.32, 0, 0.32] : [0];
+                const spd = e.move === 'fan' ? 12 : 17;
+                offs.forEach(o => spawnProjectile3D(false, e.x, 1.2, e.z, Math.sin(e.aim + o) * spd, Math.cos(e.aim + o) * spd, 0.45, e.damage, 2.4, 0xf472b6));
+                clearEnemyTelegraph(e);
+                e.cd = 1.8 + Math.random() * 0.8;
+                setAI(e, 'recover', 0.45);
+            }
+        }
+    }
+};
+
+function updateMinion(e, dt, dist, ang, now) {
+    if (e.cd > 0) e.cd -= dt;
+    if (e.ai !== 'chase') e.stateT -= dt;
+    if (e.ai === 'recover' && e.stateT <= 0) e.ai = 'chase';
+    ENEMY_BRAINS[e.type](e, dt, dist, ang, now);
+    if (e.ai !== 'strike') {
+        if (e.type === 'slime') e.mesh.position.y = 0;
+        separateEnemy(e, dt);
+    }
+    if (e.mesh.userData.legL && e.mesh.userData.legR) {
+        const walk = e.ai === 'chase' ? Math.sin(now * 10 + e.phase) * 0.55 : 0;
+        e.mesh.userData.legL.rotation.x = walk;
+        e.mesh.userData.legR.rotation.x = -walk;
+    }
+}
+
+// 서로 겹쳐 한 덩어리가 되지 않도록 밀어냄
+function separateEnemy(e, dt) {
+    for (const o of enemies) {
+        if (o === e) continue;
+        const dx = e.x - o.x, dz = e.z - o.z;
+        const d = Math.hypot(dx, dz), min = (e.radius + o.radius) * 0.95;
+        if (d < min) {
+            const push = (min - d) * Math.min(1, dt * 8);
+            const a = d > 0.001 ? Math.atan2(dx, dz) : e.phase;
+            moveEnemy(e, Math.sin(a) * push, Math.cos(a) * push);
+        }
+    }
+}
+
+// 새로 생성된 적의 AI 초기값
+function initEnemyAI(e) {
+    e.ai = 'chase';
+    e.stateT = 0;
+    e.cd = 0.9 + Math.random() * 1.2;
+    e.phase = Math.random() * 6.28;
+    e.strafeDir = Math.random() < 0.5 ? -1 : 1;
+    e.blinkCd = 1.5;
+    e.tele = null;
+}
+
+// ==========================================
 // 8. 대미지, 경험치/레벨업, 마정석 드롭
 // ==========================================
 const KNOCK_RESIST = { slime: 1.15, knight: 0.7, mage: 1.0 };
@@ -2545,6 +2806,7 @@ function damageEnemy(enemy, amount, hitAngle, knockForce, opts = {}) {
     }
 
     if (enemy.hp <= 0) {
+        clearEnemyTelegraph(enemy);
         spawnParticles3D(enemy.x, 1.0, enemy.z, enemy.colorHex, 18, 9);
 
         gold += enemy.goldReward;
@@ -2573,7 +2835,12 @@ function damageEnemy(enemy, amount, hitAngle, knockForce, opts = {}) {
     }
 }
 
-function onEnemyStaggered(enemy) {}
+// 경직되면 준비 중이던 공격이 끊김
+function onEnemyStaggered(enemy) {
+    clearEnemyTelegraph(enemy);
+    enemy.ai = 'recover';
+    enemy.stateT = 0.25;
+}
 
 // 타격 지점에 퍼지는 링 이펙트
 let hitRings = [];
@@ -2704,6 +2971,7 @@ function update(dt) {
     updateTimers(dt);
     updateAttack(dt);
     updateHitRings(dt);
+    updateTelegraphs(dt);
     if (player.invulnTimer > 0) player.invulnTimer -= dt;
     if (player.boostTimer > 0) {
         player.boostTimer -= dt;
@@ -2725,6 +2993,7 @@ function update(dt) {
     player.mp = Math.min(player.maxMp, player.mp + dt * 9.5);
 
     // 이동 처리
+    const prevPX = player.x, prevPZ = player.z;
     const moveMult = player.boostTimer > 0 ? 1.32 : 1.0;
     let isMoving = false;
 
@@ -2746,6 +3015,9 @@ function update(dt) {
             if (!a) player.angle = Math.atan2(input.x, input.z);
         }
     }
+
+    player.velX = (player.x - prevPX) / Math.max(dt, 0.001);
+    player.velZ = (player.z - prevPZ) / Math.max(dt, 0.001);
 
     // 점프 물리
     if (player.y > 0 || player.vy !== 0) {
@@ -2884,6 +3156,9 @@ function update(dt) {
             e.mesh.rotation.x = 0;
             e.mesh.scale.set(1, 1, 1);
         }
+        if (e.ai === 'windup' && e.flashTimer <= 0 && Math.floor(nowTime * 14) % 2 === 0) {
+            e.mesh.userData.hitMaterials.forEach(m => m.color.setHex(0xff5555));
+        }
 
         // 경직 중에는 이동·공격 불가
         if (e.staggerTimer > 0) {
@@ -2901,35 +3176,8 @@ function update(dt) {
         const angleToPlayer = Math.atan2(dx, dz);
         e.mesh.rotation.y = angleToPlayer;
 
-        if (e.mesh.userData.legL && e.mesh.userData.legR) {
-            const eWalk = Math.sin(nowTime * 10 + e.x) * 0.55;
-            e.mesh.userData.legL.rotation.x = eWalk;
-            e.mesh.userData.legR.rotation.x = -eWalk;
-        }
-
-        if (e.type === 'slime' || e.type === 'knight') {
-            if (dist > e.radius + player.radius - 0.15) {
-                e.x += Math.sin(angleToPlayer) * e.speed * dt;
-                e.z += Math.cos(angleToPlayer) * e.speed * dt;
-            }
-            if (e.type === 'slime') {
-                const sq = 1 + Math.sin(nowTime * 8 + e.x) * 0.12;
-                e.mesh.scale.set(sq, 1 / sq, sq);
-            }
-        } else if (e.type === 'mage') {
-            if (dist > 11) {
-                e.x += Math.sin(angleToPlayer) * e.speed * dt;
-                e.z += Math.cos(angleToPlayer) * e.speed * dt;
-            } else if (dist < 7.5) {
-                e.x -= Math.sin(angleToPlayer) * e.speed * dt;
-                e.z -= Math.cos(angleToPlayer) * e.speed * dt;
-            }
-            if (e.mesh.userData.orb) e.mesh.userData.orb.position.y = 1.75 + Math.sin(nowTime * 6 + e.x) * 0.2;
-            e.aiTimer -= dt;
-            if (e.aiTimer <= 0) {
-                e.aiTimer = 2.0;
-                spawnProjectile3D(false, e.x, 1.2, e.z, Math.sin(angleToPlayer) * 13, Math.cos(angleToPlayer) * 13, 0.45, e.damage, 2.6, 0xf472b6);
-            }
+        if (ENEMY_BRAINS[e.type]) {
+            updateMinion(e, dt, dist, angleToPlayer, nowTime);
         } else if (e.type === 'midboss' || e.type === 'boss') {
             e.aiTimer -= dt;
             e.x += Math.sin(angleToPlayer) * e.speed * dt;
@@ -2971,7 +3219,8 @@ function update(dt) {
         e.mesh.position.x = e.x;
         e.mesh.position.z = e.z;
 
-        if (player.y < 1.1 && Math.hypot(player.x - e.x, player.z - e.z) < player.radius + e.radius) {
+        // 몸통 접촉 피해는 보스만. 일반 몬스터는 예고된 공격으로만 피해를 줌
+        if (!ENEMY_BRAINS[e.type] && player.y < 1.1 && Math.hypot(player.x - e.x, player.z - e.z) < player.radius + e.radius) {
             damagePlayer(e.damage);
         }
     }
