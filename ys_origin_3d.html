@@ -263,6 +263,11 @@
                         <p>• <b>부스트 발동 중에 R / F 키(또는 궁극기 버튼)를 한 번 더 누르면</b> 초필살기 <b>EX 스페셜 아츠</b>가 발동합니다!</p>
                     </div>
                     <div class="bg-slate-950/70 p-3 rounded-xl border border-slate-800">
+                        <div class="font-black text-sky-400 mb-1">💾 자동 저장 & 전투 팁</div>
+                        <p>• 층 이동, 층 클리어, 여신상 창을 닫을 때, 그리고 10초마다 이 브라우저에 자동 저장됩니다. <b>이어하기</b>는 저장된 층의 시작 지점에서 HP/SP가 가득 찬 상태로 재개합니다.</p>
+                        <p>• 적의 공격은 바닥에 예고됩니다. 맞는 순간 대시하면 <b>저스트 회피</b>(다음 공격 1.5배), 근접 캐릭터는 대시 직후 공격하면 <b>돌진 베기</b>, 퍼지는 충격파는 <b>점프</b>로 넘으세요.</p>
+                    </div>
+                    <div class="bg-slate-950/70 p-3 rounded-xl border border-slate-800">
                         <div class="font-black text-emerald-400 mb-1">🕊️ 여신의 석상 & 마정석(SP) 강화</div>
                         <p>• 층의 마물을 전멸시키면 중앙에 <b>피나 & 레아 여신의 석상</b>이 나타납니다. 석상에 다가가면 체력이 회복되며, 모은 <b>마정석(SP)</b>으로 무기와 방어구를 연성하고 <b>+5까지 강화</b>할 수 있습니다.</p>
                         <p>• 층마다 첫 석상 접촉 시 <b>BOOST +25</b>, 수호 보스 첫 격파 시 마정석이 2배입니다.</p>
@@ -379,9 +384,14 @@
                 [이동] WASD / 방향키 &nbsp;|&nbsp; [공격] Z/J/클릭 &nbsp;|&nbsp; [점프] X/K &nbsp;|&nbsp; [정령스킬] C/L &nbsp;|&nbsp; [부스트/EX] R/F &nbsp;|&nbsp; [시점] V
             </div>
 
+            <div id="save-info" class="text-sky-300 text-[11px] sm:text-xs font-bold mb-3"></div>
+
             <div class="flex flex-wrap items-center justify-center gap-3">
                 <button id="overlay-help-btn" class="px-5 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-teal-300 font-black text-sm border border-teal-500/60 transition">
                     ❓ 조작 및 시스템 가이드
+                </button>
+                <button id="continue-btn" class="hidden px-8 py-3.5 rounded-xl bg-gradient-to-r from-sky-600 to-emerald-600 text-white font-black text-base sm:text-lg border border-sky-300/60">
+                    이어하기 (CONTINUE)
                 </button>
                 <button id="start-btn" class="px-8 py-3.5 rounded-xl bg-gradient-to-r from-amber-600 to-rose-600 hover:from-amber-500 hover:to-rose-500 text-white font-black text-base sm:text-lg shadow-lg shadow-amber-600/30 border border-amber-300/60 transition transform hover:scale-105 active:scale-95">
                     다암의 탑 등반 시작 (START)
@@ -1960,6 +1970,7 @@ function enterStageFloor(targetFloor, enteredFromSouth) {
     spawnWaveEnemies(wave);
     updateDoorState(enemies.length === 0);
     updateHUD();
+    saveGame();
 
     const realm = getRealmForFloor(wave);
     addFloatingText(player.x, 2.4, player.z, `DARM TOWER ${wave}F · ${realm.name.split(' ')[0]} — ${currentLayoutName}`, '#fbbf24');
@@ -1981,6 +1992,7 @@ function toggleShop() {
     } else if (gameState === 'SHOP') {
         gameState = prevGameState;
         shopModal.classList.add('hidden');
+        saveGame();
     }
 }
 if (shopToggleBtn) shopToggleBtn.addEventListener('click', toggleShop);
@@ -4031,6 +4043,7 @@ function update(dt) {
     const clearedNow = (enemies.length === 0);
     if (clearedNow !== nextDoorOpen) {
         updateDoorState(clearedNow);
+        saveGame();
         if (clearedNow && wave < TOTAL_STAGES) {
             addFloatingText(0, 3.2, 0, '여신의 석상 출현 & 상층 계단 개방!', '#fbbf24');
         }
@@ -4100,6 +4113,12 @@ function update(dt) {
     }
 
     updateHUD();
+
+    autosaveTimer += dt;
+    if (autosaveTimer >= 10) {
+        autosaveTimer = 0;
+        saveGame();
+    }
 }
 
 // 선딜(치켜들기) → 휘두르기 → 후딜(복귀)을 판정 타이밍에 맞춰 연결
@@ -4363,9 +4382,176 @@ function startGame() {
     resetGame();
     gameState = 'PLAYING';
     startBGM();
+    saveGame();
 }
 
+function continueGame() {
+    const data = loadSave();
+    if (!data) {
+        refreshSaveUI();
+        return false;
+    }
+    initAudio();
+    overlayScreen.classList.add('hidden');
+    selectHero(data.hero);
+    gameState = 'MENU'; // 복원 중에는 자동 저장이 끼어들지 않도록
+    resetGame();
+    applySave(data);
+    gameState = 'PLAYING';
+    startBGM();
+    saveGame();
+    return true;
+}
+
+// ==========================================
+// 11. 저장 시스템 (브라우저 localStorage)
+// ==========================================
+const SAVE_KEY = 'ysorigin3d.save';
+const SAVE_VERSION = 1;
+let autosaveTimer = 0;
+let saveCorrupted = false;
+
+function selectHero(key) {
+    selectedHeroKey = key;
+    currentHero = HEROES[key];
+    document.querySelectorAll('.char-card').forEach(c => c.classList.toggle('selected', c.getAttribute('data-char') === key));
+}
+
+function saveGame() {
+    if ((gameState !== 'PLAYING' && gameState !== 'SHOP') || player.hp <= 0 || victoryPending) return false;
+    const data = {
+        version: SAVE_VERSION, savedAt: Date.now(),
+        hero: currentHero.id, floor: wave,
+        level: player.level, exp: player.exp, gold, score, burst: player.boostTimer > 0 ? 0 : player.burst,
+        ownedWeapons, ownedArmors, weapon: equippedWeapon.id, armor: equippedArmor.id,
+        enhance: enhanceLevels, clearedBosses, blessedFloor, skillIndex: currentSkillIndex,
+        cameraMode, soundEnabled
+    };
+    try {
+        localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+        return true;
+    } catch (err) {
+        return false; // 저장 공간이 없거나 차단된 환경: 게임은 그대로 진행
+    }
+}
+
+// 값의 형식·범위를 모두 확인. 핵심 정보가 이상하면 null
+function validateSave(d) {
+    const int = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
+    if (!d || typeof d !== 'object' || d.version !== SAVE_VERSION) return null;
+    if (!Object.prototype.hasOwnProperty.call(HEROES, d.hero)) return null;
+    if (!int(d.floor, 1, TOTAL_STAGES) || !int(d.level, 1, 999) || !int(d.gold, 0, 1e12)) return null;
+    const ids = (list, table) => {
+        const known = table.map(t => t.id);
+        const out = Array.isArray(list) ? known.filter(id => list.includes(id)) : [];
+        if (!out.includes(known[0])) out.unshift(known[0]);
+        return out;
+    };
+    const weapons = ids(d.ownedWeapons, WEAPONS), armors = ids(d.ownedArmors, ARMORS);
+    const enhance = {};
+    [...weapons, ...armors].forEach(id => {
+        if (d.enhance && int(d.enhance[id], 1, MAX_ENHANCE)) enhance[id] = d.enhance[id];
+    });
+    const num = (v, fallback, max) => Number.isFinite(v) && v >= 0 ? Math.min(v, max) : fallback;
+    return {
+        hero: d.hero, floor: d.floor, level: d.level, gold: d.gold,
+        exp: Math.floor(num(d.exp, 0, 1e12)), score: Math.floor(num(d.score, 0, 1e15)), burst: num(d.burst, 0, 100),
+        ownedWeapons: weapons, ownedArmors: armors,
+        weapon: weapons.includes(d.weapon) ? d.weapon : weapons[0],
+        armor: armors.includes(d.armor) ? d.armor : armors[0],
+        enhance,
+        clearedBosses: Array.isArray(d.clearedBosses) ? d.clearedBosses.filter(v => int(v, 1, TOTAL_STAGES)) : [],
+        blessedFloor: int(d.blessedFloor, 0, TOTAL_STAGES) ? d.blessedFloor : 0,
+        skillIndex: int(d.skillIndex, 0, 2) ? d.skillIndex : 0,
+        cameraMode: d.cameraMode === 'THIRD' ? 'THIRD' : 'QUARTER',
+        soundEnabled: d.soundEnabled !== false,
+        savedAt: num(d.savedAt, 0, 1e15)
+    };
+}
+
+function loadSave() {
+    saveCorrupted = false;
+    let raw = null;
+    try {
+        raw = localStorage.getItem(SAVE_KEY);
+    } catch (err) {
+        return null;
+    }
+    if (raw === null) return null;
+    let data = null;
+    try {
+        data = validateSave(JSON.parse(raw));
+    } catch (err) {
+        data = null;
+    }
+    if (!data) saveCorrupted = true;
+    return data;
+}
+
+function deleteSave() {
+    try { localStorage.removeItem(SAVE_KEY); } catch (err) { /* 무시 */ }
+}
+
+// resetGame() 직후에 호출해 저장 상태를 덮어씀. HP/SP는 층 시작 시점처럼 가득 채움
+function applySave(d) {
+    player.level = d.level;
+    player.nextExp = Math.round(100 * Math.pow(1.25, d.level - 1));
+    player.exp = Math.min(d.exp, player.nextExp - 1);
+    gold = d.gold;
+    score = d.score;
+    ownedWeapons = [...d.ownedWeapons];
+    ownedArmors = [...d.ownedArmors];
+    enhanceLevels = { ...d.enhance };
+    clearedBosses = [...d.clearedBosses];
+    blessedFloor = d.blessedFloor;
+    equipWeapon(WEAPONS.find(w => w.id === d.weapon));
+    equipArmor(ARMORS.find(a => a.id === d.armor));
+    recalcPlayerStats(true);
+    player.burst = d.burst;
+    currentSkillIndex = (d.skillIndex + 2) % 3;
+    switchSkill();
+    if (cameraMode !== d.cameraMode) toggleCameraMode();
+    if (soundEnabled !== d.soundEnabled) soundToggleBtn.click();
+    enterStageFloor(d.floor, true);
+}
+
+const continueBtn = document.getElementById('continue-btn');
+const saveInfo = document.getElementById('save-info');
+let confirmNewGame = false;
+
+function refreshSaveUI() {
+    const data = loadSave();
+    confirmNewGame = false;
+    continueBtn.classList.toggle('hidden', !data);
+    if (data) {
+        const when = data.savedAt ? new Date(data.savedAt).toLocaleString('ko-KR') : '';
+        saveInfo.textContent = `저장 기록: ${HEROES[data.hero].koName} · ${data.floor}층 · LV.${data.level} · ${data.gold.toLocaleString()} SP ${when ? '(' + when + ')' : ''}`;
+        startBtn.textContent = '새 게임 (NEW GAME)';
+    } else {
+        saveInfo.textContent = saveCorrupted ? '저장 데이터가 손상되어 불러올 수 없습니다. 새 게임을 시작해 주세요.' : '';
+    }
+    return data;
+}
+
+continueBtn.addEventListener('click', continueGame);
+
+// 저장 기록이 있으면 새 게임은 두 번 눌러야 시작 (실수로 덮어쓰기 방지)
+function onStartButton() {
+    if (loadSave() && !confirmNewGame) {
+        confirmNewGame = true;
+        startBtn.textContent = '기존 저장을 덮어씁니다 — 한 번 더 클릭';
+        return;
+    }
+    confirmNewGame = false;
+    deleteSave();
+    startGame();
+}
+
+window.addEventListener('beforeunload', saveGame);
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveGame(); });
+
 function endGame(isVictory) {
+    if (gameState === 'VICTORY' || gameState === 'GAMEOVER') return;
     gameState = isVictory ? 'VICTORY' : 'GAMEOVER';
     stopBGM();
     overlayScreen.classList.remove('hidden');
@@ -4381,9 +4567,12 @@ function endGame(isVictory) {
         overlaySubtitle.innerHTML = `다암의 탑 <b>${wave}층</b>에서 쓰러졌습니다. (도달 레벨: <b class="text-sky-300">LV.${player.level}</b>)<br>여신의 석상에서 무구를 연성하거나 이전 층에서 레벨업 후 다시 도전하세요!`;
         startBtn.textContent = '다시 등반하기 (RETRY)';
     }
+    // 클리어하면 기록 삭제, 쓰러지면 마지막 자동 저장에서 이어하기 가능
+    if (isVictory) deleteSave();
+    refreshSaveUI();
 }
 
-startBtn.addEventListener('click', startGame);
+startBtn.addEventListener('click', onStartButton);
 
 let lastFrameTime = performance.now();
 function animateLoop(now) {
@@ -4406,6 +4595,7 @@ window.onload = function () {
     }
     camera.position.set(0, 12.5, 27);
     camera.lookAt(0, 1.0, 14);
+    refreshSaveUI();
     animateLoop(performance.now());
 };
 </script>
