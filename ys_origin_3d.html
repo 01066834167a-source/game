@@ -3873,6 +3873,7 @@ function update(dt) {
     // 투사체 업데이트
     for (let i = projectiles.length - 1; i >= 0; i--) {
         const p = projectiles[i];
+        if (!p) continue; // 타격 처리 중(보스 페이즈 전환 등) 목록이 줄어들 수 있음
         if (p.homing) steerProjectile(p, dt);
         p.x += p.vx * dt;
         p.z += p.vz * dt;
@@ -3902,7 +3903,8 @@ function update(dt) {
 
         if (p.life <= 0 || isSolidAt(p.x, p.z) || Math.abs(p.x) > ARENA_HALF_W + 1 || Math.abs(p.z) > ARENA_HALF_D + 1) {
             scene.remove(p.mesh);
-            projectiles.splice(i, 1);
+            const idx = projectiles.indexOf(p); // 위치가 밀렸을 수 있으므로 다시 찾음
+            if (idx >= 0) projectiles.splice(idx, 1);
         }
     }
 
