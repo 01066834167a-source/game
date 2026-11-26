@@ -667,6 +667,25 @@ function stopBGM() {
     }
 }
 
+let noiseBuffer = null;
+function playNoise(now, duration, volume) {
+    if (!audioCtx.createBuffer) return;
+    if (!noiseBuffer) {
+        noiseBuffer = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * 0.25), audioCtx.sampleRate);
+        const data = noiseBuffer.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    }
+    const src = audioCtx.createBufferSource();
+    const g = audioCtx.createGain();
+    src.buffer = noiseBuffer;
+    g.gain.setValueAtTime(volume, now);
+    g.gain.exponentialRampToValueAtTime(0.01, now + duration);
+    src.connect(g);
+    g.connect(audioCtx.destination);
+    src.start(now);
+    src.stop(now + duration);
+}
+
 function playSound(type) {
     if (!soundEnabled) return;
     initAudio();
@@ -701,6 +720,23 @@ function playSound(type) {
         gain.gain.exponentialRampToValueAtTime(0.01, now + 0.09);
         osc.start(now);
         osc.stop(now + 0.1);
+    } else if (type === 'heavyhit') {
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(150, now);
+        osc.frequency.exponentialRampToValueAtTime(35, now + 0.2);
+        gain.gain.setValueAtTime(0.3, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+        playNoise(now, 0.12, 0.22);
+        osc.start(now);
+        osc.stop(now + 0.21);
+    } else if (type === 'dodge') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(700, now);
+        osc.frequency.exponentialRampToValueAtTime(1600, now + 0.16);
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+        osc.start(now);
+        osc.stop(now + 0.21);
     } else if (type === 'skill') {
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(320, now);
@@ -1456,7 +1492,12 @@ const player = {
     dashCooldown: 0,
     dashDirX: 0,
     dashDirZ: 0,
-    invulnTimer: 0
+    invulnTimer: 0,
+    attack: null,
+    attackBuffer: 0,
+    dashStrikeWindow: 0,
+    dodgeWindow: 0,
+    counterTimer: 0
 };
 
 let enemies = [];
@@ -1516,6 +1557,17 @@ function enterStageFloor(targetFloor, enteredFromSouth) {
     particles = [];
     items = [];
     floatingTexts = [];
+    hitRings.forEach(r => removeEffectMesh(r.mesh));
+    hitRings = [];
+
+    cancelAttack();
+    player.comboStep = 0;
+    player.attackCooldown = 0;
+    player.dashTimer = 0;
+    player.dashStrikeWindow = 0;
+    player.dodgeWindow = 0;
+    player.counterTimer = 0;
+    hitStopTimer = 0;
 
     bossHud.classList.add('hidden');
     bossHud.classList.remove('flex');
@@ -1796,22 +1848,52 @@ function findNearestEnemyAngle() {
     return bestAng;
 }
 
+// 콤보 단계별 타이밍: windup(선딜) 후 타격 판정 → cancel 시점부터 다음 타 연계 → total 종료
+const COMBO = [
+    { windup: 0.07, cancel: 0.12, total: 0.24, mult: 1.0,  reach: 0,   arc: 0.55, knock: 6,  lunge: 0.55, stagger: 0.22, stop: 0.035, shake: 0.14, burst: 9 },
+    { windup: 0.07, cancel: 0.13, total: 0.26, mult: 1.35, reach: 0.2, arc: 0.60, knock: 7,  lunge: 0.60, stagger: 0.26, stop: 0.045, shake: 0.18, burst: 9 },
+    { windup: 0.13, cancel: 0.24, total: 0.40, mult: 2.15, reach: 1.2, arc: 1.00, knock: 14, lunge: 1.15, stagger: 0.48, stop: 0.085, shake: 0.38, burst: 15 }
+];
+const DASH_STRIKE = { windup: 0.04, cancel: 0.14, total: 0.28, mult: 1.6, reach: 0.9, arc: 0.50, knock: 11, lunge: 1.6, stagger: 0.38, stop: 0.06, shake: 0.28, burst: 11 };
+
+function comboConfig(step) {
+    return COMBO[step - 1];
+}
+
+function attackSpeedMult() {
+    const boost = player.boostTimer > 0 ? 0.68 : 1.0;
+    return boost * (currentHero.attackStyle === 'claw' ? 0.78 : 1.0);
+}
+
 function triggerAttack() {
-    if (player.attackCooldown > 0) return;
+    // 모션 중 입력은 버리지 않고 예약 → 캔슬 시점에 다음 타로 이어짐
+    if (player.attack) {
+        player.attackBuffer = 0.32;
+        return;
+    }
+    if (player.attackCooldown > 0) {
+        player.attackBuffer = 0.32;
+        return;
+    }
+    startAttack();
+}
+
+function startAttack() {
+    player.attackBuffer = 0;
 
     // 가까운 적이 사거리 내에 있으면 살짝 자동 조준 보정
     const autoAng = findNearestEnemyAngle();
     if (autoAng !== null) player.angle = autoAng;
 
-    const speedMult = player.boostTimer > 0 ? 0.62 : 1.0;
+    const speedMult = attackSpeedMult();
 
     // 휴고 팩트: 원거리 팩트 아이 마탄 연사!
     if (currentHero.attackStyle === 'ranged') {
-        player.attackCooldown = 0.14 * speedMult;
+        player.attackCooldown = 0.16 * speedMult;
         player.slashVisualTimer = 0.12;
         playSound('magic');
 
-        const shotDmg = Math.round(player.atk * (player.boostTimer > 0 ? 1.25 : 1.0));
+        const shotDmg = Math.round(player.atk * (player.boostTimer > 0 ? 1.25 : 1.0) * consumeCounter());
         const perpX = Math.cos(player.angle) * 0.75;
         const perpZ = -Math.sin(player.angle) * 0.75;
         const vx = Math.sin(player.angle) * 34;
@@ -1822,59 +1904,129 @@ function triggerAttack() {
         return;
     }
 
-    // 유니카 토바 & 토르 팩트: 근접 3단 콤보 (토르는 공격 속도가 훨씬 빠름)
-    player.comboStep = (player.comboStep % 3) + 1;
-    player.comboResetTimer = 0.65;
-    player.slashVisualTimer = 0.16;
-
-    const styleSpeed = currentHero.attackStyle === 'claw' ? 0.75 : 1.0;
-    player.attackCooldown = (player.comboStep === 3 ? 0.24 : 0.14) * speedMult * styleSpeed;
-
-    const stepDist = player.comboStep === 3 ? 0.85 : 0.45;
-    player.x = Math.max(-ARENA_HALF_W + 1.2, Math.min(ARENA_HALF_W - 1.2, player.x + Math.sin(player.angle) * stepDist));
-    player.z = Math.max(-ARENA_HALF_D + 1.2, Math.min(ARENA_HALF_D - 1.2, player.z + Math.cos(player.angle) * stepDist));
-
+    // 유니카 토바 & 토르 팩트: 근접 3단 콤보 (대시 직후에는 돌진 베기)
+    const dashStrike = player.dashStrikeWindow > 0;
+    if (dashStrike) {
+        player.dashStrikeWindow = 0;
+        player.dashTimer = 0;
+        player.comboStep = 1;
+    } else {
+        player.comboStep = (player.comboStep % 3) + 1;
+    }
+    const cfg = dashStrike ? DASH_STRIKE : comboConfig(player.comboStep);
+    player.attack = {
+        cfg, step: player.comboStep, dashStrike, t: 0, hitDone: false,
+        windup: cfg.windup * speedMult, cancel: cfg.cancel * speedMult, total: cfg.total * speedMult
+    };
+    player.comboResetTimer = player.attack.total + 0.45;
     playSound(`slash${player.comboStep}`);
+}
+
+function updateAttack(dt) {
+    if (player.attackBuffer > 0) player.attackBuffer -= dt;
+    const a = player.attack;
+    if (!a) {
+        if (player.attackBuffer > 0 && player.attackCooldown <= 0) startAttack();
+        return;
+    }
+    const before = a.t;
+    a.t += dt;
+
+    // 선딜 동안 전진하며 파고들되, 적 몸을 뚫고 지나가지는 않음
+    if (before < a.windup) {
+        const frac = (Math.min(a.t, a.windup) - before) / a.windup;
+        const blocked = enemies.some(e => {
+            const dx = e.x - player.x, dz = e.z - player.z;
+            return Math.hypot(dx, dz) < e.radius + player.radius + 0.25 &&
+                Math.abs(normalizeAngle(Math.atan2(dx, dz) - player.angle)) < 1.0;
+        });
+        if (!blocked) movePlayer(Math.sin(player.angle) * a.cfg.lunge * frac, Math.cos(player.angle) * a.cfg.lunge * frac);
+    }
+
+    if (!a.hitDone && a.t >= a.windup) {
+        a.hitDone = true;
+        resolveMeleeHit(a);
+    }
+
+    if (player.attack !== a) return;
+    if (a.hitDone && a.t >= a.cancel && player.attackBuffer > 0) {
+        player.attack = null;
+        if (a.step === 3) {
+            player.comboStep = 0;
+            player.attackCooldown = (a.total - a.cancel) * 0.5;
+        } else {
+            startAttack();
+        }
+        return;
+    }
+    if (a.t >= a.total) {
+        player.attack = null;
+        if (a.step === 3) player.comboStep = 0;
+    }
+}
+
+function cancelAttack() {
+    player.attack = null;
+    player.attackBuffer = 0;
+    if (slashArcMesh) slashArcMesh.visible = false;
+    player.slashVisualTimer = 0;
+}
+
+function movePlayer(mx, mz) {
+    player.x = Math.max(-ARENA_HALF_W + 1.1, Math.min(ARENA_HALF_W - 1.1, player.x + mx));
+    player.z = Math.max(-ARENA_HALF_D + 1.1, Math.min(ARENA_HALF_D - 1.1, player.z + mz));
+}
+
+function consumeCounter() {
+    if (player.counterTimer > 0) {
+        player.counterTimer = 0;
+        addFloatingText(player.x, 2.5, player.z, 'COUNTER!', '#67e8f9');
+        return 1.5;
+    }
+    return 1.0;
+}
+
+function resolveMeleeHit(a) {
+    const cfg = a.cfg;
+    const finisher = a.step === 3;
+    player.slashVisualTimer = 0.14;
 
     if (slashArcMesh) {
         slashArcMesh.visible = true;
         const defaultSlash = currentHero.id === 'toal' ? 0xc084fc : equippedWeapon.slashColor;
-        slashArcMesh.material.color.setHex(player.comboStep === 3 ? 0xf59e0b : defaultSlash);
-        const sc = player.comboStep === 3 ? 1.45 : 1.05;
-        slashArcMesh.scale.set(sc, sc, 1);
+        slashArcMesh.material.color.setHex(finisher ? 0xf59e0b : defaultSlash);
+        const sc = finisher ? 1.45 : 1.05;
+        slashArcMesh.scale.set(a.step === 2 ? -sc : sc, sc, 1);
     }
 
-    const reach = (player.comboStep === 3 ? equippedWeapon.reach + 1.2 : equippedWeapon.reach) * (currentHero.id === 'toal' ? 0.92 : 1.0);
+    const reach = (equippedWeapon.reach + cfg.reach) * (currentHero.id === 'toal' ? 0.92 : 1.0);
     const baseAtk = player.atk * (player.boostTimer > 0 ? 1.25 : 1.0);
-    const damage = player.comboStep === 3 ? Math.round(baseAtk * 2.15) : (player.comboStep === 2 ? Math.round(baseAtk * 1.35) : Math.round(baseAtk));
-    let hitAny = false;
-
-    for (const enemy of enemies) {
+    const targets = enemies.filter(enemy => {
+        if (enemy.hp <= 0) return false;
         const dx = enemy.x - player.x;
         const dz = enemy.z - player.z;
         const dist = Math.hypot(dx, dz);
+        if (dist > reach + enemy.radius) return false;
+        // 몸이 겹칠 만큼 가까우면 방향과 무관하게 적중
+        if (dist < enemy.radius + player.radius) return true;
+        return Math.abs(normalizeAngle(Math.atan2(dx, dz) - player.angle)) <= Math.PI * cfg.arc;
+    });
+    if (!targets.length) return;
 
-        if (dist <= reach + enemy.radius) {
-            const angleToEnemy = Math.atan2(dx, dz);
-            const angleDiff = Math.abs(normalizeAngle(angleToEnemy - player.angle));
-            if (player.comboStep === 3 || angleDiff <= Math.PI * 0.55) {
-                damageEnemy(enemy, damage, player.angle, player.comboStep === 3 ? 11 : 5.5);
-                hitAny = true;
-            }
-        }
+    const damage = Math.round(baseAtk * cfg.mult * consumeCounter());
+    for (const enemy of targets) {
+        const dir = finisher ? Math.atan2(enemy.x - player.x, enemy.z - player.z) : player.angle;
+        damageEnemy(enemy, damage, dir, cfg.knock, { stagger: cfg.stagger, shake: cfg.shake, heavy: finisher || a.dashStrike });
     }
 
-    if (hitAny) {
-        player.mp = Math.min(player.maxMp, player.mp + 7);
-        if (player.boostTimer <= 0) {
-            player.burst = Math.min(100, player.burst + (player.comboStep === 3 ? 15 : 9));
-        }
-        hitStopTimer = player.comboStep === 3 ? 0.038 : 0.016;
-    }
+    player.mp = Math.min(player.maxMp, player.mp + 7);
+    if (player.boostTimer <= 0) player.burst = Math.min(100, player.burst + cfg.burst);
+    hitStopTimer = Math.max(hitStopTimer, cfg.stop);
 }
 
 function triggerJump() {
     if (player.y === 0) {
+        if (player.attack && player.attack.hitDone) cancelAttack();
         player.vy = 16.5;
         playSound('jump');
     }
@@ -1882,12 +2034,35 @@ function triggerJump() {
 
 function triggerDash() {
     if (player.dashCooldown > 0 || player.dashTimer > 0) return;
+    cancelAttack(); // 대시는 어떤 공격 모션도 즉시 캔슬
+    player.attackCooldown = 0;
+
+    // 이동키를 누르고 있으면 그 방향으로 회피
+    const input = readMoveInput();
+    if (input) player.angle = Math.atan2(input.x, input.z);
+
     player.dashTimer = 0.18;
-    player.dashCooldown = 0.52;
-    player.invulnTimer = 0.28;
+    player.dashCooldown = 0.46;
+    player.dashStrikeWindow = 0.34;
+    player.dodgeWindow = 0.26;
+    player.invulnTimer = Math.max(player.invulnTimer, 0.28);
     player.dashDirX = Math.sin(player.angle);
     player.dashDirZ = Math.cos(player.angle);
+    spawnParticles3D(player.x, 0.5, player.z, 0xe2e8f0, 6, 4);
     playSound('dash');
+}
+
+function readMoveInput() {
+    let forward = 0, strafe = 0;
+    if (keys['ArrowUp'] || keys['KeyW']) forward += 1;
+    if (keys['ArrowDown'] || keys['KeyS']) forward -= 1;
+    if (keys['ArrowLeft'] || keys['KeyA']) strafe += 1;
+    if (keys['ArrowRight'] || keys['KeyD']) strafe -= 1;
+    if (forward === 0 && strafe === 0) return null;
+    const x = Math.sin(cameraYaw) * forward + Math.sin(cameraYaw + Math.PI / 2) * strafe;
+    const z = Math.cos(cameraYaw) * forward + Math.cos(cameraYaw + Math.PI / 2) * strafe;
+    const len = Math.hypot(x, z) || 1;
+    return { x: x / len, z: z / len };
 }
 
 function triggerSkill() {
@@ -1896,6 +2071,7 @@ function triggerSkill() {
         addFloatingText(player.x, 2.1, player.z, 'SP 부족!', '#94a3b8');
         return;
     }
+    cancelAttack();
     player.mp -= sk.cost;
     if (player.boostTimer <= 0) {
         player.burst = Math.min(100, player.burst + 14);
@@ -2125,22 +2301,35 @@ function spawnWaveEnemies(w) {
 // ==========================================
 // 8. 대미지, 경험치/레벨업, 마정석 드롭
 // ==========================================
-function damageEnemy(enemy, amount, hitAngle, knockForce) {
+const KNOCK_RESIST = { slime: 1.15, knight: 0.7, mage: 1.0 };
+
+function damageEnemy(enemy, amount, hitAngle, knockForce, opts = {}) {
+    if (enemy.hp <= 0) return; // 이미 쓰러진 적은 다시 처리하지 않음 (보상 중복 방지)
     enemy.hp -= amount;
     enemy.flashTimer = 0.1;
-    if (enemy.type !== 'boss' && enemy.type !== 'midboss') {
-        enemy.knockX = Math.sin(hitAngle) * knockForce;
-        enemy.knockZ = Math.cos(hitAngle) * knockForce;
+    const isBossType = enemy.type === 'boss' || enemy.type === 'midboss';
+    enemy.hitReactTimer = 0.18;
+    if (!isBossType) {
+        const k = knockForce * (KNOCK_RESIST[enemy.type] || 1) * 1.5;
+        enemy.knockX = Math.sin(hitAngle) * k;
+        enemy.knockZ = Math.cos(hitAngle) * k;
+        // 기사는 약한 공격에는 자세가 무너지지 않음
+        const stagger = opts.stagger || 0.2;
+        if (enemy.type !== 'knight' || opts.heavy || stagger >= 0.3) {
+            enemy.staggerTimer = Math.max(enemy.staggerTimer || 0, stagger);
+            onEnemyStaggered(enemy);
+        }
     }
 
     combo++;
     comboTimer = 2.5;
     score += amount * (1 + Math.floor(combo / 5));
 
-    playSound('hit');
-    screenShake = (enemy.type === 'boss' || enemy.type === 'midboss') ? 0.25 : 0.14;
-    spawnParticles3D(enemy.x, 1.0, enemy.z, 0xfbbf24, 7, 7);
-    addFloatingText(enemy.x, 2.2, enemy.z, `-${amount}`, '#fde047');
+    playSound(opts.heavy ? 'heavyhit' : 'hit');
+    screenShake = Math.max(screenShake, opts.shake || (isBossType ? 0.22 : 0.12));
+    spawnParticles3D(enemy.x, 1.0, enemy.z, 0xfbbf24, opts.heavy ? 14 : 7, opts.heavy ? 11 : 7);
+    spawnHitRing(enemy.x, enemy.z, opts.heavy ? 0xf59e0b : 0xffffff, opts.heavy ? 1.5 : 0.9);
+    addFloatingText(enemy.x, 2.2, enemy.z, `-${amount}`, opts.heavy ? '#fb923c' : '#fde047');
 
     // 휴고 팩트 원거리 마탄 적중 시에도 부스트 게이지 충전
     if (currentHero.attackStyle === 'ranged' && player.boostTimer <= 0) {
@@ -2181,13 +2370,63 @@ function damageEnemy(enemy, amount, hitAngle, knockForce) {
     }
 }
 
+function onEnemyStaggered(enemy) {}
+
+// 타격 지점에 퍼지는 링 이펙트
+let hitRings = [];
+function spawnHitRing(x, z, colorHex, size) {
+    if (hitRings.length > 24) return;
+    const mesh = new THREE.Mesh(
+        new THREE.RingGeometry(0.55, 0.75, 18),
+        new THREE.MeshBasicMaterial({ color: colorHex, side: THREE.DoubleSide, transparent: true, opacity: 0.9 })
+    );
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(x, 1.1, z);
+    scene.add(mesh);
+    hitRings.push({ mesh, life: 0.2, size });
+}
+
+function updateHitRings(dt) {
+    for (let i = hitRings.length - 1; i >= 0; i--) {
+        const r = hitRings[i];
+        r.life -= dt;
+        const s = r.size * (1 + (1 - Math.max(0, r.life) / 0.2) * 1.4);
+        r.mesh.scale.set(s, s, 1);
+        r.mesh.material.opacity = Math.max(0, r.life / 0.2);
+        if (r.life <= 0) {
+            removeEffectMesh(r.mesh);
+            hitRings.splice(i, 1);
+        }
+    }
+}
+
+function removeEffectMesh(mesh) {
+    scene.remove(mesh);
+    if (mesh.geometry && mesh.geometry.dispose) mesh.geometry.dispose();
+    if (mesh.material && mesh.material.dispose) mesh.material.dispose();
+}
+
 function damagePlayer(amount) {
-    if (player.invulnTimer > 0 || gameState !== 'PLAYING') return;
+    if (gameState !== 'PLAYING') return;
+    if (player.dodgeWindow > 0) {
+        // 공격이 닿는 순간의 대시 = 저스트 회피 (대시 1회당 1번)
+        player.dodgeWindow = 0;
+        player.counterTimer = 1.6;
+        player.mp = Math.min(player.maxMp, player.mp + 15);
+        if (player.boostTimer <= 0) player.burst = Math.min(100, player.burst + 10);
+        player.dashCooldown = Math.min(player.dashCooldown, 0.12);
+        playSound('dodge');
+        addFloatingText(player.x, 2.4, player.z, 'JUST DODGE! 다음 공격 x1.5', '#67e8f9');
+        return;
+    }
+    if (player.invulnTimer > 0) return;
     const mitigated = Math.max(1, amount - player.def);
     player.hp = Math.max(0, player.hp - mitigated);
     player.invulnTimer = 0.85;
     combo = 0;
     screenShake = 0.45;
+    cancelAttack();
+    player.comboStep = 0;
     playSound('hurt');
     addFloatingText(player.x, 1.9, player.z, `피격 -${mitigated}`, '#f87171');
 
@@ -2255,6 +2494,11 @@ function update(dt) {
     }
     if (player.whirlwindTimer > 0) player.whirlwindTimer -= dt;
     if (player.dashCooldown > 0) player.dashCooldown -= dt;
+    if (player.dashStrikeWindow > 0) player.dashStrikeWindow -= dt;
+    if (player.dodgeWindow > 0) player.dodgeWindow -= dt;
+    if (player.counterTimer > 0) player.counterTimer -= dt;
+    updateAttack(dt);
+    updateHitRings(dt);
     if (player.invulnTimer > 0) player.invulnTimer -= dt;
     if (player.boostTimer > 0) {
         player.boostTimer -= dt;
@@ -2285,29 +2529,14 @@ function update(dt) {
         player.z += player.dashDirZ * (player.speed * 2.6) * dt;
         isMoving = true;
     } else {
-        let forwardInput = 0;
-        let strafeInput = 0;
-        if (keys['ArrowUp'] || keys['KeyW']) forwardInput += 1;
-        if (keys['ArrowDown'] || keys['KeyS']) forwardInput -= 1;
-        if (keys['ArrowLeft'] || keys['KeyA']) strafeInput += 1;
-        if (keys['ArrowRight'] || keys['KeyD']) strafeInput -= 1;
-
-        if (forwardInput !== 0 || strafeInput !== 0) {
+        const input = readMoveInput();
+        if (input) {
             isMoving = true;
-            const fwdX = Math.sin(cameraYaw);
-            const fwdZ = Math.cos(cameraYaw);
-            const rightX = Math.sin(cameraYaw + Math.PI / 2);
-            const rightZ = Math.cos(cameraYaw + Math.PI / 2);
-
-            let moveX = fwdX * forwardInput + rightX * strafeInput;
-            let moveZ = fwdZ * forwardInput + rightZ * strafeInput;
-            const len = Math.hypot(moveX, moveZ) || 1;
-            moveX /= len;
-            moveZ /= len;
-
-            player.x += moveX * player.speed * moveMult * dt;
-            player.z += moveZ * player.speed * moveMult * dt;
-            player.angle = Math.atan2(moveX, moveZ);
+            // 공격 모션 중에는 발이 묶이고, 타격 이후에는 천천히 움직일 수 있음
+            const a = player.attack;
+            const slow = a ? (a.hitDone ? 0.35 : 0.0) : 1.0;
+            movePlayer(input.x * player.speed * moveMult * slow * dt, input.z * player.speed * moveMult * slow * dt);
+            if (!a) player.angle = Math.atan2(input.x, input.z);
         }
     }
 
@@ -2340,8 +2569,12 @@ function update(dt) {
         if (playerMesh.userData.cape) {
             playerMesh.userData.cape.rotation.x = 0.16 + (isMoving ? 0.25 + Math.sin(nowTime * 14) * 0.08 : 0.04);
         }
+        const atk = player.attack;
+        playerMesh.rotation.x = 0;
         if (playerMesh.userData.armR) {
-            if (player.slashVisualTimer > 0) {
+            if (atk) {
+                applyAttackPose(atk);
+            } else if (player.slashVisualTimer > 0) {
                 const swingProgress = 1 - (player.slashVisualTimer / 0.16);
                 playerMesh.userData.armR.rotation.x = -1.3 + swingProgress * 1.6;
                 playerMesh.userData.armR.rotation.y = (player.comboStep % 2 === 0 ? -1 : 1) * (0.9 - swingProgress * 1.8);
@@ -2422,8 +2655,30 @@ function update(dt) {
         if (Math.abs(e.knockX) > 0.05 || Math.abs(e.knockZ) > 0.05) {
             e.x += e.knockX * dt;
             e.z += e.knockZ * dt;
-            e.knockX *= 0.85;
-            e.knockZ *= 0.85;
+            const damp = Math.pow(0.82, dt * 60);
+            e.knockX *= damp;
+            e.knockZ *= damp;
+        }
+
+        if (e.hitReactTimer > 0) {
+            e.hitReactTimer -= dt;
+            const k = Math.max(0, e.hitReactTimer / 0.18);
+            e.mesh.rotation.x = -0.35 * k;
+            const big = e.type === 'boss' || e.type === 'midboss';
+            e.mesh.scale.set(1 + (big ? 0.04 : 0.16) * k, 1 - (big ? 0.03 : 0.12) * k, 1 + (big ? 0.04 : 0.16) * k);
+        } else {
+            e.mesh.rotation.x = 0;
+            e.mesh.scale.set(1, 1, 1);
+        }
+
+        // 경직 중에는 이동·공격 불가
+        if (e.staggerTimer > 0) {
+            e.staggerTimer -= dt;
+            e.x = Math.max(-ARENA_HALF_W + 1.2, Math.min(ARENA_HALF_W - 1.2, e.x));
+            e.z = Math.max(-ARENA_HALF_D + 1.2, Math.min(ARENA_HALF_D - 1.2, e.z));
+            e.mesh.position.x = e.x;
+            e.mesh.position.z = e.z;
+            continue;
         }
 
         const dx = player.x - e.x;
@@ -2633,6 +2888,28 @@ function update(dt) {
     }
 
     updateHUD();
+}
+
+// 선딜(치켜들기) → 휘두르기 → 후딜(복귀)을 판정 타이밍에 맞춰 연결
+function applyAttackPose(a) {
+    const arm = playerMesh.userData.armR;
+    const side = a.step === 2 ? -1 : 1;
+    const ease = v => v * v * (3 - 2 * v);
+    if (a.t < a.windup) {
+        const k = ease(a.t / a.windup);
+        arm.rotation.x = -2.0 * k;
+        arm.rotation.y = side * 1.1 * k;
+        playerMesh.rotation.y = player.angle + side * 0.35 * k;
+    } else {
+        const swing = ease(Math.min(1, (a.t - a.windup) / Math.max(0.01, a.cancel - a.windup)));
+        const back = ease(Math.max(0, (a.t - a.cancel) / Math.max(0.01, a.total - a.cancel)));
+        arm.rotation.x = (-2.0 + 2.6 * swing) * (1 - back);
+        arm.rotation.y = side * (1.1 - 2.2 * swing) * (1 - back);
+        // 3타는 몸 전체 회전 베기
+        const spin = a.step === 3 ? Math.PI * 2 * swing : side * (0.35 - 0.7 * swing) * (1 - back);
+        playerMesh.rotation.y = player.angle + spin;
+    }
+    playerMesh.rotation.x = a.dashStrike ? 0.22 * (1 - a.t / a.total) : 0;
 }
 
 function updateHUD() {
