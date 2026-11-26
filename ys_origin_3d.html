@@ -99,6 +99,45 @@
         .enhance-btn { padding: 3px 10px; border-radius: 6px; background: #b45309; color: #fff; font-weight: 900; border: 1px solid #fcd34d; }
         .enhance-btn:disabled { background: #334155; color: #64748b; border-color: #475569; cursor: not-allowed; }
 
+        /* HP / SP / BOOST 막대 */
+        #vital-bars { display: flex; flex-direction: column; gap: 4px; width: 170px; margin-left: 8px; }
+        .vbar { position: relative; height: 14px; border-radius: 4px; overflow: hidden; background: #0f172a; border: 1px solid #334155; }
+        .vbar i { position: absolute; left: 0; top: 0; bottom: 0; width: 100%; transition: width 0.12s; }
+        .vbar span { position: relative; display: flex; justify-content: space-between; padding: 0 5px; font-size: 9px; font-weight: 900; line-height: 12px; color: #fff; text-shadow: 0 1px 2px #000; }
+        .vbar.low { border-color: #f43f5e; animation: lowPulse 0.8s infinite; }
+        @keyframes lowPulse { 50% { box-shadow: 0 0 9px #f43f5e; } }
+        @media (max-width: 760px) { #vital-bars { display: none; } }
+
+        /* 쿨타임 덮개 */
+        #btn-skill, #btn-dash { position: relative; overflow: hidden; }
+        .cd-mask { position: absolute; inset: 0; pointer-events: none; display: none; }
+        .cd-text { position: absolute; inset: 0; pointer-events: none; display: none; align-items: center; justify-content: center; font-size: 18px; font-weight: 900; color: #fff; text-shadow: 0 0 4px #000, 0 1px 3px #000; }
+
+        /* 콤보 */
+        #combo-hud .combo-count { line-height: 1; }
+        #combo-hud .combo-rank { font-size: 13px; letter-spacing: 2px; text-align: right; }
+        #combo-hud .combo-time { height: 3px; margin-top: 3px; margin-left: auto; background: currentColor; border-radius: 2px; }
+        #combo-hud { text-align: right; }
+        #combo-hud.bump .combo-count { animation: comboBump 0.16s ease-out; }
+        @keyframes comboBump { from { transform: scale(1.35); } to { transform: scale(1); } }
+
+        /* 상태 칩 */
+        #status-chips { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); display: flex; gap: 6px; z-index: 10; pointer-events: none; white-space: nowrap; }
+        .chip { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 900; background: rgba(2,6,23,0.75); border: 1px solid currentColor; }
+
+        /* 보스 체력바 */
+        #boss-hud { width: min(420px, 82vw) !important; }
+        .boss-track { position: relative; width: 100%; height: 14px; border-radius: 4px; overflow: hidden; background: #020617; border: 1px solid rgba(217,70,239,0.75); }
+        .boss-track > div { position: absolute; left: 0; top: 0; bottom: 0; }
+        #boss-hp-ghost { background: #fef3c7; transition: width 0.7s ease-out 0.2s; }
+        .boss-tick { position: absolute; top: 0; bottom: 0; width: 2px; background: rgba(255,255,255,0.85); z-index: 2; }
+        #boss-hp-pct { position: absolute; right: 5px; top: 0; z-index: 3; font-size: 9px; font-weight: 900; line-height: 12px; color: #fff; text-shadow: 0 0 3px #000; }
+
+        /* HUD가 화면을 가리지 않도록 안내판은 잠시 후 옅어짐 */
+        #portal-guide { transition: opacity 0.6s; max-width: 46%; }
+        #portal-guide.dim { opacity: 0.35; }
+        @media (max-width: 640px) { #portal-guide { font-size: 9px; padding: 4px 6px; } }
+
         .boost-ready {
             animation: boostPulse 1.2s infinite;
         }
@@ -156,8 +195,11 @@
             </div>
             <div id="boss-hud" class="hidden flex-col items-center w-52 sm:w-72">
                 <span id="boss-name-label" class="text-[10px] font-black text-fuchsia-300 tracking-widest">DEMON GUARDIAN</span>
-                <div class="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-fuchsia-500/70">
-                    <div id="boss-hp-bar" class="h-full bg-gradient-to-r from-purple-600 via-fuchsia-500 to-rose-500 transition-all duration-150" style="width: 100%;"></div>
+                <div class="boss-track">
+                    <div id="boss-hp-ghost" style="width: 100%;"></div>
+                    <div id="boss-hp-bar" class="bg-gradient-to-r from-purple-600 via-fuchsia-500 to-rose-500 transition-all duration-150" style="width: 100%; background-color: #c026d3;"></div>
+                    <i class="boss-tick" style="left: 33%;"></i><i class="boss-tick" style="left: 66%;"></i>
+                    <span id="boss-hp-pct">100%</span>
                 </div>
             </div>
         </div>
@@ -198,6 +240,8 @@
         <div id="combo-hud" class="hidden absolute top-3 right-4 ys-title text-2xl sm:text-3xl font-black text-amber-400 pointer-events-none z-10">
             0 HIT!
         </div>
+
+        <div id="status-chips"></div>
 
         <!-- 도움말 모달 -->
         <div id="help-modal" class="hidden absolute inset-0 bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center p-4 z-30">
@@ -357,10 +401,12 @@
             <button id="btn-skill" data-action="skill" class="action-btn btn-amber w-14 h-14 sm:w-16 sm:h-16 rounded-2xl flex flex-col items-center justify-center text-white">
                 <span id="skill-btn-name" class="text-[11px] sm:text-xs font-black">홍련의검</span>
                 <span id="skill-btn-cost" class="text-[9px] text-amber-200">SP 25</span>
+                <span class="cd-mask" id="cd-skill-mask"></span><span class="cd-text" id="cd-skill-text"></span>
             </button>
             <button id="btn-dash" data-action="dash" class="action-btn btn-emerald w-12 h-14 sm:w-14 sm:h-16 rounded-2xl flex flex-col items-center justify-center text-white">
                 <span class="text-xs font-black">회피대시</span>
                 <span class="text-[9px] text-emerald-200">Space</span>
+                <span class="cd-mask" id="cd-dash-mask"></span>
             </button>
         </div>
 
@@ -398,11 +444,11 @@
                 </div>
             </div>
 
-            <div class="hidden md:flex flex-col text-[10px] font-bold ml-2 space-y-0.5 text-left">
-                <div class="text-rose-400">● HP: <span id="legend-hp">100/100</span></div>
-                <div class="text-amber-400">● SP: <span id="legend-mp">100/100</span></div>
-                <div class="text-sky-400">● 정령: <span id="legend-skill">준비완료</span></div>
-                <div class="text-fuchsia-400">● BOOST: <span id="legend-burst">0%</span></div>
+            <div id="vital-bars">
+                <div class="vbar" id="vb-hp"><i id="vf-hp" style="background:#e11d48"></i><span>HP <b id="legend-hp">100/100</b></span></div>
+                <div class="vbar"><i id="vf-mp" style="background:#b45309"></i><span>SP <b id="legend-mp">100/100</b></span></div>
+                <div class="vbar"><i id="vf-burst" style="background:#a21caf; width:0%"></i><span>BOOST <b id="legend-burst">0%</b></span></div>
+                <div style="font-size:10px;font-weight:700;color:#7dd3fc">정령: <span id="legend-skill">준비완료</span></div>
             </div>
         </div>
 
@@ -1462,6 +1508,7 @@ function buildStageMap(floorNum) {
 }
 
 function updateDoorState(isOpen) {
+    if (nextDoorOpen !== isOpen) showPortalGuide();
     nextDoorOpen = isOpen;
     statueActive = isOpen;
 
@@ -1909,6 +1956,7 @@ function enterStageFloor(targetFloor, enteredFromSouth) {
         playerMesh.rotation.y = player.angle;
     }
 
+    showPortalGuide();
     spawnWaveEnemies(wave);
     updateDoorState(enemies.length === 0);
     updateHUD();
@@ -2791,7 +2839,7 @@ function spawnAreaBoss(floor) {
     bossHud.classList.remove('hidden');
     bossHud.classList.add('flex');
     if (bossNameLabel) bossNameLabel.textContent = `${floor}F GUARDIAN · ${realm.bossName}`;
-    bossHpBar.style.width = '100%';
+    setBossBar(1, true);
 
     const mesh = createEnemy3DMesh(isFinal ? 'boss' : 'midboss');
     mesh.position.set(0, 0, -ARENA_HALF_D + 7.5);
@@ -3519,8 +3567,7 @@ function damageEnemy(enemy, amount, hitAngle, knockForce, opts = {}) {
     }
 
     if (enemy.type === 'boss' || enemy.type === 'midboss') {
-        const pct = Math.max(0, (enemy.hp / enemy.maxHp) * 100);
-        bossHpBar.style.width = `${pct}%`;
+        setBossBar(enemy.hp / enemy.maxHp);
     }
 
     if (enemy.hp <= 0) {
@@ -4156,12 +4203,109 @@ function updateHUD() {
         if (boostBtnLabel) boostBtnLabel.textContent = 'BOOST';
     }
 
-    if (combo >= 2) {
-        comboHud.classList.remove('hidden');
-        comboHud.textContent = `${combo} HIT!`;
-    } else {
+    updateComboHud();
+    updateCooldownHud();
+    updateStatusChips();
+
+    const setFill = (id, ratio) => { const el = document.getElementById(id); if (el) el.style.width = `${(ratio * 100).toFixed(1)}%`; };
+    setFill('vf-hp', hpRatio);
+    setFill('vf-mp', mpRatio);
+    setFill('vf-burst', burstRatio);
+    const hpBox = document.getElementById('vb-hp');
+    if (hpBox) hpBox.classList.toggle('low', hpRatio < 0.3);
+}
+
+const COMBO_RANKS = [[50, 'LEGEND', '#f0abfc'], [30, 'EXCELLENT', '#fb7185'], [15, 'GREAT', '#fb923c'], [5, 'GOOD', '#fbbf24'], [0, '', '#fde68a']];
+let shownCombo = 0;
+
+function updateComboHud() {
+    if (combo < 2) {
         comboHud.classList.add('hidden');
+        shownCombo = 0;
+        return;
     }
+    if (!comboHud.querySelector('.combo-count')) {
+        comboHud.innerHTML = '<div class="combo-count"></div><div class="combo-rank"></div><div class="combo-time"></div>';
+    }
+    const [, label, color] = COMBO_RANKS.find(r => combo >= r[0]);
+    comboHud.classList.remove('hidden');
+    comboHud.style.color = color;
+    comboHud.children[0].textContent = `${combo} HIT!`;
+    comboHud.children[1].textContent = label;
+    comboHud.children[2].style.width = `${Math.max(0, Math.min(1, comboTimer / 2.5)) * 90}px`;
+    if (combo > shownCombo) {
+        comboHud.classList.remove('bump');
+        void comboHud.offsetWidth;
+        comboHud.classList.add('bump');
+    }
+    shownCombo = combo;
+}
+
+function paintCooldown(maskId, left, total) {
+    const mask = document.getElementById(maskId);
+    if (!mask) return;
+    mask.style.display = left > 0 ? 'block' : 'none';
+    if (left > 0) {
+        const deg = Math.min(360, left / total * 360);
+        mask.style.background = `conic-gradient(rgba(2,6,23,0.78) ${deg}deg, transparent ${deg}deg)`;
+    }
+}
+
+function updateCooldownHud() {
+    const sk = currentHero.skills[currentSkillIndex];
+    const left = skillCooldowns[sk.id] || 0;
+    paintCooldown('cd-skill-mask', left, SKILL_COOLDOWN[sk.id]);
+    const text = document.getElementById('cd-skill-text');
+    if (text) {
+        text.style.display = left > 0 ? 'flex' : 'none';
+        text.textContent = left > 0 ? left.toFixed(1) : '';
+    }
+    if (left > 0 && legendSkill) legendSkill.textContent = `${sk.name} 대기 ${left.toFixed(1)}초`;
+    paintCooldown('cd-dash-mask', Math.max(0, player.dashCooldown), HERO_COMBAT[currentHero.id].dash.cooldown);
+}
+
+let chipSignature = '';
+function updateStatusChips() {
+    const box = document.getElementById('status-chips');
+    if (!box) return;
+    const chips = [];
+    if (player.boostTimer > 0) chips.push([`BOOST ${player.boostTimer.toFixed(1)}s`, '#fbbf24']);
+    if (player.lifestealTimer > 0) chips.push([`흡혈 ${player.lifestealTimer.toFixed(1)}s`, '#e879f9']);
+    if (player.counterTimer > 0) chips.push(['COUNTER 준비', '#67e8f9']);
+    if (frenzyBonus() > 0) chips.push([`공속 +${Math.round(frenzyBonus() * 100)}%`, '#c084fc']);
+    const sig = JSON.stringify(chips);
+    if (sig === chipSignature) return;
+    chipSignature = sig;
+    box.innerHTML = '';
+    chips.forEach(([label, color]) => {
+        const el = document.createElement('span');
+        el.className = 'chip';
+        el.style.color = color;
+        el.textContent = label;
+        box.appendChild(el);
+    });
+}
+
+// 보스 체력바: 실제 값 + 뒤따라 줄어드는 잔상 + 수치
+function setBossBar(ratio, instant) {
+    const pct = Math.max(0, Math.min(1, ratio)) * 100;
+    bossHpBar.style.width = `${pct}%`;
+    const ghost = document.getElementById('boss-hp-ghost');
+    if (ghost) {
+        ghost.style.transition = instant ? 'none' : '';
+        ghost.style.width = `${pct}%`;
+    }
+    const label = document.getElementById('boss-hp-pct');
+    if (label) label.textContent = `${Math.ceil(pct)}%`;
+}
+
+let guideDimTimer = null;
+function showPortalGuide() {
+    const el = document.getElementById('portal-guide');
+    if (!el) return;
+    el.classList.remove('dim');
+    clearTimeout(guideDimTimer);
+    guideDimTimer = setTimeout(() => el.classList.add('dim'), 5000);
 }
 
 // ==========================================
