@@ -94,6 +94,11 @@
             100% { opacity: 0; }
         }
 
+        .shop-card { flex-wrap: wrap; }
+        .enhance-row { flex-basis: 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11px; font-weight: 700; color: #fcd34d; border-top: 1px solid rgba(148,163,184,0.25); padding-top: 6px; }
+        .enhance-btn { padding: 3px 10px; border-radius: 6px; background: #b45309; color: #fff; font-weight: 900; border: 1px solid #fcd34d; }
+        .enhance-btn:disabled { background: #334155; color: #64748b; border-color: #475569; cursor: not-allowed; }
+
         .boost-ready {
             animation: boostPulse 1.2s infinite;
         }
@@ -215,7 +220,9 @@
                     </div>
                     <div class="bg-slate-950/70 p-3 rounded-xl border border-slate-800">
                         <div class="font-black text-emerald-400 mb-1">🕊️ 여신의 석상 & 마정석(SP) 강화</div>
-                        <p>• 층의 마물을 전멸시키면 중앙에 <b>피나 & 레아 여신의 석상</b>이 나타납니다. 석상에 다가가면 체력이 회복되며, 모은 <b>마정석(SP)</b>으로 무기와 방어구를 강화할 수 있습니다.</p>
+                        <p>• 층의 마물을 전멸시키면 중앙에 <b>피나 & 레아 여신의 석상</b>이 나타납니다. 석상에 다가가면 체력이 회복되며, 모은 <b>마정석(SP)</b>으로 무기와 방어구를 연성하고 <b>+5까지 강화</b>할 수 있습니다.</p>
+                        <p>• 층마다 첫 석상 접촉 시 <b>BOOST +25</b>, 수호 보스 첫 격파 시 마정석이 2배입니다.</p>
+                        <p>• 정령 스킬은 <b>LV.6 / LV.12</b>에서 랭크가 올라 강해지고 각각 재사용 대기시간이 있습니다. BOOST 발동 시 대기시간이 초기화되고, 부스트가 많이 남았을 때 EX를 쓸수록 강력합니다.</p>
                     </div>
                 </div>
             </div>
@@ -1769,16 +1776,52 @@ let particles = [];
 let floatingTexts = [];
 let items = [];
 
+// ---- 성장 연결: 장비 강화 / 스킬 랭크 / 쿨타임 / 첫 격파 보상 ----
+const MAX_ENHANCE = 5;
+const SKILL_RANK_LEVELS = [1, 6, 12];
+const SKILL_RANK_POWER = [1.0, 1.18, 1.36];
+const SKILL_COOLDOWN = { fire: 2.5, wind: 5.0, thunder: 6.5 };
+const BOOST_DURATION = 7.0;
+
+let enhanceLevels = {};      // { itemId: 0~5 }
+let clearedBosses = [];      // 첫 격파 보너스를 받은 보스 층
+let blessedFloor = 0;        // 마지막으로 여신의 축복(BOOST)을 받은 층
+let skillCooldowns = {};
+let exPower = 1.0;
+
+const enhanceOf = item => enhanceLevels[item.id] || 0;
+const weaponBonus = w => Math.round(w.atk * 0.08) * enhanceOf(w);
+const armorDefBonus = a => enhanceOf(a) * (1 + Math.floor(a.def / 10));
+const armorHpBonus = a => enhanceOf(a) * 15;
+const enhanceCost = item => Math.round((50 + item.price * 0.2) * (enhanceOf(item) + 1));
+
+function enhanceItem(item) {
+    if (enhanceOf(item) >= MAX_ENHANCE || gold < enhanceCost(item)) return false;
+    gold -= enhanceCost(item);
+    const hpBefore = player.maxHp;
+    enhanceLevels[item.id] = enhanceOf(item) + 1;
+    recalcPlayerStats(false);
+    player.hp = Math.min(player.maxHp, player.hp + Math.max(0, player.maxHp - hpBefore));
+    playSound('levelup');
+    return true;
+}
+
+function skillRank() {
+    return SKILL_RANK_LEVELS.filter(lv => player.level >= lv).length;
+}
+const skillAtk = () => player.atk * SKILL_RANK_POWER[skillRank() - 1];
+const exAtk = () => player.atk * exPower;
+
 function recalcPlayerStats(healFull = false) {
     const lvBonusHp = (player.level - 1) * 20;
     const lvBonusMp = (player.level - 1) * 8;
     const lvBonusAtk = (player.level - 1) * 4;
     const lvBonusDef = Math.floor((player.level - 1) / 2);
 
-    player.maxHp = 100 + equippedArmor.bonusHp + lvBonusHp;
+    player.maxHp = 100 + equippedArmor.bonusHp + armorHpBonus(equippedArmor) + lvBonusHp;
     player.maxMp = 100 + lvBonusMp;
-    player.atk = currentHero.baseAtk + (equippedWeapon.atk - 16) + lvBonusAtk;
-    player.def = equippedArmor.def + lvBonusDef;
+    player.atk = currentHero.baseAtk + (equippedWeapon.atk - 16) + weaponBonus(equippedWeapon) + lvBonusAtk;
+    player.def = equippedArmor.def + armorDefBonus(equippedArmor) + lvBonusDef;
     player.speed = currentHero.speed;
 
     if (healFull) {
@@ -1794,7 +1837,9 @@ function gainExp(amount) {
     player.exp += amount;
     while (player.exp >= player.nextExp) {
         player.exp -= player.nextExp;
+        const rankBefore = skillRank();
         player.level++;
+        if (skillRank() > rankBefore) addFloatingText(player.x, 3.1, player.z, `정령 스킬 랭크 ${skillRank()}! (위력 상승)`, '#c4b5fd');
         player.nextExp = Math.round(100 * Math.pow(1.25, player.level - 1));
         recalcPlayerStats(true);
         playSound('levelup');
@@ -1936,6 +1981,7 @@ function renderShop() {
             renderShop();
             updateHUD();
         });
+        if (owned) addEnhanceRow(card, w);
         weaponListEl.appendChild(card);
     });
 
@@ -1974,8 +2020,28 @@ function renderShop() {
             renderShop();
             updateHUD();
         });
+        if (owned) addEnhanceRow(card, a);
         armorListEl.appendChild(card);
     });
+}
+
+function addEnhanceRow(card, item) {
+    const lv = enhanceOf(item);
+    const isWeapon = WEAPONS.includes(item);
+    card.classList.add('shop-card');
+    const row = document.createElement('div');
+    row.className = 'enhance-row';
+    const info = document.createElement('span');
+    info.textContent = `강화 +${lv}/${MAX_ENHANCE}` + (lv ? (isWeapon ? ` (STR +${weaponBonus(item)})` : ` (DEF +${armorDefBonus(item)}, HP +${armorHpBonus(item)})`) : '');
+    const btn = document.createElement('button');
+    btn.className = 'enhance-btn';
+    btn.textContent = lv >= MAX_ENHANCE ? '최대' : `강화 ${enhanceCost(item)} SP`;
+    btn.disabled = lv >= MAX_ENHANCE || gold < enhanceCost(item);
+    btn.addEventListener('click', () => {
+        if (enhanceItem(item)) { renderShop(); updateHUD(); }
+    });
+    row.append(info, btn);
+    card.appendChild(row);
 }
 
 function equipWeapon(w) {
@@ -2443,12 +2509,17 @@ function readMoveInput() {
 
 function triggerSkill() {
     const sk = currentHero.skills[currentSkillIndex];
+    if ((skillCooldowns[sk.id] || 0) > 0) {
+        addFloatingText(player.x, 2.1, player.z, `재사용 대기 ${skillCooldowns[sk.id].toFixed(1)}초`, '#94a3b8');
+        return;
+    }
     if (player.mp < sk.cost) {
         addFloatingText(player.x, 2.1, player.z, 'SP 부족!', '#94a3b8');
         return;
     }
     cancelAttack();
     player.mp -= sk.cost;
+    skillCooldowns[sk.id] = SKILL_COOLDOWN[sk.id] * (player.boostTimer > 0 ? 0.5 : 1);
     if (player.boostTimer <= 0) {
         player.burst = Math.min(100, player.burst + 14);
     }
@@ -2481,7 +2552,7 @@ const SKILL_ACTIONS = {
         // 홍련의검: 관통하는 대형 화염 검기를 3번 연속 방출
         fire(sk) {
             for (let k = 0; k < 3; k++) {
-                const cast = () => fanShot([0], 27, 1.15, Math.round(player.atk * 1.5), 0.6, 0xf97316, { pierce: true, knock: 10, hit: { stagger: 0.4, heavy: true } });
+                const cast = () => fanShot([0], 27, 1.15, Math.round(skillAtk() * 1.5), 0.6, 0xf97316, { pierce: true, knock: 10, hit: { stagger: 0.4, heavy: true } });
                 if (k === 0) cast(); else schedule(0.13 * k, cast);
             }
         },
@@ -2491,7 +2562,7 @@ const SKILL_ACTIONS = {
             clearEnemyProjectiles(9.5);
             spawnParticles3D(player.x, 1.2, player.z, 0x4ade80, 24, 12);
             addFloatingText(player.x, 2.3, player.z, `${sk.name}!`, '#4ade80');
-            areaStrike(player.x, player.z, 8.5, Math.round(player.atk * 2.4), 18, { color: 0x4ade80, stagger: 0.6, heavy: true });
+            areaStrike(player.x, player.z, 8.5, Math.round(skillAtk() * 2.4), 18, { color: 0x4ade80, stagger: 0.6, heavy: true });
         },
         // 금강의사자: 번개를 두른 무적 돌진
         thunder(sk) {
@@ -2509,7 +2580,7 @@ const SKILL_ACTIONS = {
                     for (const e of enemies) {
                         if (!struck.has(e) && Math.hypot(e.x - player.x, e.z - player.z) < 3.8 + e.radius) {
                             struck.add(e);
-                            damageEnemy(e, Math.round(player.atk * 2.8), player.angle, 15, { stagger: 0.55, heavy: true });
+                            damageEnemy(e, Math.round(skillAtk() * 2.8), player.angle, 15, { stagger: 0.55, heavy: true });
                         }
                     }
                 });
@@ -2519,14 +2590,14 @@ const SKILL_ACTIONS = {
     hugo: {
         // 폭염의마탄: 관통 화염구 5연발
         fire() {
-            fanShot([-0.24, -0.12, 0, 0.12, 0.24], 30, 0.65, Math.round(player.atk * 1.45), 0.85, 0xf97316, { pierce: true, knock: 6 });
+            fanShot([-0.24, -0.12, 0, 0.12, 0.24], 30, 0.65, Math.round(skillAtk() * 1.45), 0.85, 0xf97316, { pierce: true, knock: 6 });
         },
         // 결계배리어: 회복 + 무적, 주변 적을 밀어내고 탄 제거
         wind() {
             player.invulnTimer = 2.6;
             player.hp = Math.min(player.maxHp, player.hp + 35);
             clearEnemyProjectiles(8);
-            areaStrike(player.x, player.z, 5.0, Math.round(player.atk * 0.8), 22, { color: 0x38bdf8, stagger: 0.7, heavy: true });
+            areaStrike(player.x, player.z, 5.0, Math.round(skillAtk() * 0.8), 22, { color: 0x38bdf8, stagger: 0.7, heavy: true });
             addFloatingText(player.x, 2.3, player.z, '결계 배리어! HP+35', '#38bdf8');
         },
         // 뇌전의기둥: 가까운 적들의 발밑에 시간차 낙뢰
@@ -2535,14 +2606,14 @@ const SKILL_ACTIONS = {
             const near = [...enemies].sort((a, b) => Math.hypot(a.x - player.x, a.z - player.z) - Math.hypot(b.x - player.x, b.z - player.z)).slice(0, 5);
             near.forEach((target, i) => schedule(0.12 + i * 0.1, () => {
                 spawnParticles3D(target.x, 3.0, target.z, 0xfde047, 16, 10);
-                areaStrike(target.x, target.z, 2.8, Math.round(player.atk * 2.3), 8, { color: 0xfde047, stagger: 0.5, heavy: true });
+                areaStrike(target.x, target.z, 2.8, Math.round(skillAtk() * 2.3), 8, { color: 0xfde047, stagger: 0.5, heavy: true });
             }));
         }
     },
     toal: {
         // 암흑충격파: 3갈래 검기와 함께 앞으로 돌진
         fire() {
-            fanShot([-0.2, 0, 0.2], 32, 0.65, Math.round(player.atk * 1.7), 0.8, 0xa855f7, { pierce: true, knock: 7 });
+            fanShot([-0.2, 0, 0.2], 32, 0.65, Math.round(skillAtk() * 1.7), 0.8, 0xa855f7, { pierce: true, knock: 7 });
             player.dashTimer = 0.14;
             player.dashSpeed = 2.4;
             player.dashDirX = Math.sin(player.angle);
@@ -2557,7 +2628,7 @@ const SKILL_ACTIONS = {
             for (let k = 0; k < 6; k++) {
                 schedule(0.001 + 0.1 * k, () => {
                     clearEnemyProjectiles(4.5);
-                    areaStrike(player.x, player.z, 4.8, Math.round(player.atk * 0.55), k === 5 ? 14 : 2, { color: 0xc084fc, stagger: 0.2, heavy: k === 5 });
+                    areaStrike(player.x, player.z, 4.8, Math.round(skillAtk() * 0.55), k === 5 ? 14 : 2, { color: 0xc084fc, stagger: 0.2, heavy: k === 5 });
                 });
             }
         },
@@ -2567,7 +2638,7 @@ const SKILL_ACTIONS = {
             player.invulnTimer = 1.4;
             player.hp = Math.min(player.maxHp, player.hp + 20);
             addFloatingText(player.x, 2.3, player.z, `${sk.name}! 6초 흡혈`, '#e879f9');
-            areaStrike(player.x, player.z, 5.5, Math.round(player.atk * 1.4), 14, { color: 0xa855f7, stagger: 0.5, heavy: true });
+            areaStrike(player.x, player.z, 5.5, Math.round(skillAtk() * 1.4), 14, { color: 0xa855f7, stagger: 0.5, heavy: true });
         }
     }
 };
@@ -2582,23 +2653,23 @@ function radialShots(count, phase, speed, radius, dmg, color, opts) {
 const EX_ACTIONS = {
     // 유니카: 전 화면을 가르는 거대한 2연격
     yunica() {
-        const dmg = Math.round(player.atk * 3.2);
+        const dmg = Math.round(exAtk() * 3.2);
         for (const e of [...enemies]) damageEnemy(e, dmg, Math.atan2(e.x - player.x, e.z - player.z), 18, { stagger: 0.9, heavy: true });
-        radialShots(12, 0, 30, 1.0, Math.round(player.atk * 2.0), 0xf97316, { pierce: true });
+        radialShots(12, 0, 30, 1.0, Math.round(exAtk() * 2.0), 0xf97316, { pierce: true });
         schedule(0.42, () => {
             screenShake = 0.9;
-            areaStrike(player.x, player.z, 16, Math.round(player.atk * 3.6), 20, { color: 0xf97316, stagger: 0.8, heavy: true });
+            areaStrike(player.x, player.z, 16, Math.round(exAtk() * 3.6), 20, { color: 0xf97316, stagger: 0.8, heavy: true });
         });
     },
     // 휴고: 5파의 마탄 포격
     hugo() {
         for (let w = 0; w < 5; w++) {
             schedule(0.001 + 0.2 * w, () => {
-                radialShots(14, w * 0.22, 34, 0.7, Math.round(player.atk * 1.6), 0x38bdf8, { homing: 5.0 });
+                radialShots(14, w * 0.22, 34, 0.7, Math.round(exAtk() * 1.6), 0x38bdf8, { homing: 5.0 });
                 playSound('magic');
             });
         }
-        for (const e of [...enemies]) damageEnemy(e, Math.round(player.atk * 2.4), Math.atan2(e.x - player.x, e.z - player.z), 12, { stagger: 0.8, heavy: true });
+        for (const e of [...enemies]) damageEnemy(e, Math.round(exAtk() * 2.4), Math.atan2(e.x - player.x, e.z - player.z), 12, { stagger: 0.8, heavy: true });
     },
     // 토르: 적 사이를 오가는 12연 난무
     toal() {
@@ -2608,7 +2679,7 @@ const EX_ACTIONS = {
                 if (!alive.length) return;
                 const e = alive[k % alive.length];
                 spawnParticles3D(e.x, 1.2, e.z, 0xc084fc, 10, 9);
-                areaStrike(e.x, e.z, 3.0, Math.round(player.atk * (k === 11 ? 2.4 : 0.85)), k === 11 ? 18 : 2, { color: 0xc084fc, stagger: 0.3, heavy: k === 11 });
+                areaStrike(e.x, e.z, 3.0, Math.round(exAtk() * (k === 11 ? 2.4 : 0.85)), k === 11 ? 18 : 2, { color: 0xc084fc, stagger: 0.3, heavy: k === 11 });
                 playSound('slash3');
             });
         }
@@ -2619,9 +2690,10 @@ const EX_ACTIONS = {
 function triggerBoostOrEx() {
     // 1단계: 게이지가 100%이고 아직 부스트 중이 아닐 때 -> BOOST 각성 발동!
     if (player.burst >= 100 && player.boostTimer <= 0) {
-        player.boostTimer = 7.0;
+        player.boostTimer = BOOST_DURATION;
         player.invulnTimer = 1.5;
         player.mp = player.maxMp;
+        skillCooldowns = {};
         screenShake = 0.55;
         playSound('levelup');
         spawnParticles3D(player.x, 1.2, player.z, 0xfbbf24, 28, 14);
@@ -2631,6 +2703,8 @@ function triggerBoostOrEx() {
 
     // 2단계: BOOST 각성 중에 다시 한 번 누르면 -> 초필살기 EX 스페셜 발동!
     if (player.boostTimer > 0) {
+        // 남은 부스트 시간이 많을수록 EX가 강해짐 (최대 +40%): 지속이냐 일격이냐의 선택
+        exPower = 1 + 0.4 * Math.min(1, player.boostTimer / BOOST_DURATION);
         player.boostTimer = 0;
         player.burst = 0;
         player.invulnTimer = 2.2;
@@ -3454,6 +3528,12 @@ function damageEnemy(enemy, amount, hitAngle, knockForce, opts = {}) {
         spawnParticles3D(enemy.x, 1.0, enemy.z, enemy.colorHex, 18, 9);
 
         gold += enemy.goldReward;
+        if (player.boostTimer > 0) player.boostTimer = Math.min(BOOST_DURATION, player.boostTimer + 0.6);
+        if (enemy.kit !== undefined && !clearedBosses.includes(wave)) {
+            clearedBosses.push(wave);
+            gold += enemy.goldReward;
+            addFloatingText(enemy.x, 3.4, enemy.z, `수호자 첫 격파 보너스 +${enemy.goldReward} SP`, '#f0abfc');
+        }
         addFloatingText(enemy.x, 1.7, enemy.z, `+${enemy.goldReward} SP / +${enemy.expReward} EXP`, '#fbbf24');
         gainExp(enemy.expReward);
 
@@ -3611,6 +3691,7 @@ function update(dt) {
     if (player.dodgeWindow > 0) player.dodgeWindow -= dt;
     if (player.counterTimer > 0) player.counterTimer -= dt;
     if (player.lifestealTimer > 0) player.lifestealTimer -= dt;
+    for (const id in skillCooldowns) if (skillCooldowns[id] > 0) skillCooldowns[id] = Math.max(0, skillCooldowns[id] - dt);
     updateTimers(dt);
     updateAttack(dt);
     updateHitRings(dt);
@@ -3619,7 +3700,7 @@ function update(dt) {
     if (player.invulnTimer > 0) player.invulnTimer -= dt;
     if (player.boostTimer > 0) {
         player.boostTimer -= dt;
-        player.burst = Math.max(0, (player.boostTimer / 7.0) * 100);
+        player.burst = Math.max(0, (player.boostTimer / BOOST_DURATION) * 100);
     }
     if (screenShake > 0) screenShake = Math.max(0, screenShake - dt * 2.2);
 
@@ -3911,6 +3992,14 @@ function update(dt) {
         if (guideNextDoor) guideNextDoor.textContent = `🔒 북쪽 계단문: 남은 마물 ${enemies.length}체 처치 시 개방`;
     }
 
+    // 층마다 한 번, 여신의 축복으로 BOOST 게이지 충전
+    if (statueActive && blessedFloor !== wave && Math.hypot(player.x, player.z) < 2.6) {
+        blessedFloor = wave;
+        if (player.boostTimer <= 0) player.burst = Math.min(100, player.burst + 25);
+        playSound('pickup');
+        addFloatingText(0, 3.4, 0, 'BOOST +25 · B키로 무구 연성/강화', '#fde047');
+    }
+
     // 여신의 석상 접촉 시 체력 회복 효과
     if (statueActive && Math.hypot(player.x, player.z) < 2.6 && statueHealCooldown <= 0) {
         if (player.hp < player.maxHp) {
@@ -4099,6 +4188,11 @@ function resetGame() {
 
     ownedWeapons = ['short'];
     ownedArmors = ['tunic'];
+    enhanceLevels = {};
+    clearedBosses = [];
+    blessedFloor = 0;
+    skillCooldowns = {};
+    exPower = 1.0;
     equipWeapon(WEAPONS[0]);
     equipArmor(ARMORS[0]);
     recalcPlayerStats(true);
